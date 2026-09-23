@@ -11,10 +11,14 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-project(NexusDB LANGUAGES C)
+project(NexusDB LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Werror)
@@ -28,5 +32,13 @@ add_executable(nexus_container_test
   tests/container/container_test.c
 )
 
+# Phase 1: Page + PageStorage (Digvijay, Database Engine).
+add_executable(db_storage_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  tests/db/storage_test.cpp
+)
+
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
+add_test(NAME db_storage COMMAND db_storage_test)
