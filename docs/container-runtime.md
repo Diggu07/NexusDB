@@ -9,8 +9,8 @@ cgroups, no DB logic, no Bridge logic.
 |---|---|
 | `include/container/container.h` | Public API: `nexus_container_t`, `nexus_state_t`, error codes, `container_create/start/stop/delete/status/get` |
 | `src/container/container.c` | In-memory registry (64 slots) + lifecycle transitions + validation |
-| `src/runtime/process.h` / `src/runtime/process.c` | Placeholder child process: Linux `fork/exec(sleep)/waitpid`; Windows `CreateProcess(ping)` shim for dev machines without WSL |
-| `tests/container_test.c` | Lifecycle demo + error-path checks: create → start → status → stop → delete |
+| `include/container/process.h` / `src/container/process.c` | Placeholder child process: Linux `fork/exec(sleep)/waitpid`; Windows `CreateProcess(ping)` shim for dev machines without WSL |
+| `tests/container/container_test.c` | Lifecycle demo + error-path checks: create → start → status → stop → delete |
 | `Makefile` | `make` / `make test` / `make clean` (Linux `make`, Windows `mingw32-make`) |
 
 ## Lifecycle

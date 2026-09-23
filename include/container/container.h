@@ -7,7 +7,7 @@
  *   - In-memory container registry (name/ID, PID, state, limits, paths).
  *   - Lifecycle: create -> start -> stop -> delete.
  *   - A portable placeholder child process stands in for the DB engine
- *     until Digvijay's DB executable is ready (see src/runtime/process.*).
+ *     until Digvijay's DB executable is ready (see src/container/process.c).
  *
  * EXPLICITLY OUT OF SCOPE here (later phases):
  *   - Linux namespaces (Phase 3), cgroups v2 (Phase 4), real cgroup paths
@@ -18,7 +18,7 @@
  *
  * PORTABILITY:
  *   Real deployment target is Ubuntu/WSL2 (Linux). This dev machine has no
- *   WSL, so src/runtime/process.c has a Windows branch so the lifecycle
+ *   WSL, so src/container/process.c has a Windows branch so the lifecycle
  *   demo compiles/runs here too. The Linux branch uses fork/exec/waitpid.
  */
 #ifndef NEXUS_CONTAINER_H

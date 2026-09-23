@@ -32,8 +32,8 @@ BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/nexus_container_test$(EXE)
 
 SRCS := src/container/container.c \
-        src/runtime/process.c \
-        tests/container_test.c
+        src/container/process.c \
+        tests/container/container_test.c
 OBJS := $(BUILD_DIR)/container.o \
         $(BUILD_DIR)/process.o \
         $(BUILD_DIR)/container_test.o
@@ -50,10 +50,10 @@ endif
 $(BUILD_DIR)/container.o: src/container/container.c include/container/container.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/process.o: src/runtime/process.c src/runtime/process.h | $(BUILD_DIR)
+$(BUILD_DIR)/process.o: src/container/process.c include/container/process.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/container_test.o: tests/container_test.c include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/container_test.o: tests/container/container_test.c include/container/container.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(TEST_BIN): $(OBJS)
