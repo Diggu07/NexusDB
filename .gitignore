@@ -44,11 +44,11 @@ build/
 Build/
 build-*/
 
-# CMake generated files
+# CMake generated files (note: the repo's own root Makefile is source, keep it)
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
+# Makefile
 install_manifest.txt
 compile_commands.json
 
