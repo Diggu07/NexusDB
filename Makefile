@@ -1,8 +1,8 @@
 # NexusDB — Container Engine (foundation) build.
 #
 # Targets:
-#   make            build the lifecycle test binary
-#   make test       build + run the lifecycle test
+#   make            build all test binaries
+#   make test       build + run all tests (container + db storage)
 #   make clean      remove build artefacts
 #
 # Linux (Ubuntu/WSL2, the real target):
@@ -19,7 +19,11 @@
 ifeq ($(origin CC),default)
 CC = gcc
 endif
+ifeq ($(origin CXX),default)
+CXX = g++
+endif
 CFLAGS  ?= -Wall -Wextra -Werror -std=c11
+CXXFLAGS ?= -Wall -Wextra -Werror -std=c++17
 CPPFLAGS += -Iinclude
 
 ifeq ($(OS),Windows_NT)
@@ -38,7 +42,13 @@ OBJS := $(BUILD_DIR)/container.o \
         $(BUILD_DIR)/process.o \
         $(BUILD_DIR)/container_test.o
 
-all: $(TEST_BIN)
+# Phase 1 DB storage (Digvijay): Page + PageStorage, C++17.
+DB_TEST_BIN := $(BUILD_DIR)/db_storage_test$(EXE)
+DB_OBJS := $(BUILD_DIR)/page.o \
+           $(BUILD_DIR)/page_storage.o \
+           $(BUILD_DIR)/storage_test.o
+
+all: $(TEST_BIN) $(DB_TEST_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -59,8 +69,21 @@ $(BUILD_DIR)/container_test.o: tests/container/container_test.c include/containe
 $(TEST_BIN): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@
 
-test: $(TEST_BIN)
+$(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/page_storage.o: src/db/storage/page_storage.cpp include/db/page_storage.h include/db/page.h include/common/error.h include/common/config.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/storage_test.o: tests/db/storage_test.cpp include/db/page_storage.h include/db/page.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(DB_TEST_BIN): $(DB_OBJS)
+	$(CXX) $(CXXFLAGS) $(DB_OBJS) -o $@
+
+test: $(TEST_BIN) $(DB_TEST_BIN)
 	$(TEST_BIN)
+	$(DB_TEST_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)
