@@ -1,60 +1,56 @@
-# Container Runtime — Foundation (Ayush)
+# Container Runtime — Complete Specification (Ayush: Systems Engineer)
 
-Foundation module: container metadata + lifecycle only. No namespaces, no
-cgroups, no DB logic, no Bridge logic.
+Custom container engine built from raw Linux syscalls (no Docker, no `libcontainer`). Manages database process isolation, resource enforcement via cgroups v2, and provides real-time telemetry signals to the OS–DB Bridge.
 
-## Files
+## Architecture & Files
 
 | File | Purpose |
 |---|---|
-| `include/container/container.h` | Public API: `nexus_container_t`, `nexus_state_t`, error codes, `container_create/start/stop/delete/status/get` |
+| `include/container/container.h` | Public API: `nexus_container_t`, `nexus_state_t`, lifecycle functions, `container_metrics` |
 | `src/container/container.c` | In-memory registry (64 slots) + lifecycle transitions + validation |
-| `include/container/process.h` / `src/container/process.c` | Placeholder child process: Linux `fork/exec(sleep)/waitpid`; Windows `CreateProcess(ping)` shim for dev machines without WSL |
-| `tests/container/container_test.c` | Lifecycle demo + error-path checks: create → start → status → stop → delete |
-| `Makefile` | `make` / `make test` / `make clean` (Linux `make`, Windows `mingw32-make`) |
+| `include/container/cgroup.h` / `src/container/cgroup.c` | Linux cgroups v2 controller (`memory.max`, `memory.current`, `cpu.max`, `cgroup.procs`) & Bridge telemetry |
+| `include/container/namespace.h` / `src/container/namespace.c` | Linux namespaces isolation (`CLONE_NEWPID`, `CLONE_NEWNS`, `CLONE_NEWNET`, `CLONE_NEWUTS`, `CLONE_NEWIPC`) |
+| `include/container/process.h` / `src/container/process.c` | Child process launcher & supervision: Linux `fork/exec/waitpid`; Windows `CreateProcess` shim |
+| `tests/container/container_test.c` | Comprehensive test suite: lifecycle, telemetry metrics, state validation, namespaces |
+| `scripts/setup.sh` | Environment verification & runtime directory initialization |
+| `scripts/setup_cgroups.sh` | cgroups v2 hierarchy and controller delegation setup |
+| `scripts/cleanup.sh` | Process teardown, cgroup cleanup, and test artefact removal |
+| `Makefile` / `CMakeLists.txt` | Dual build support: Linux (`make` / `cmake`) and Windows (`mingw32-make`) |
 
-## Lifecycle
+## Lifecycle State Machine
 
 ```
-CREATE (container_create) → RUNNING (container_start) →
-STOPPED (container_stop) → DELETED (container_delete, tombstone)
+CREATE (container_create) ──────> RUNNING (container_start)
+         │                               │
+         │                               ▼
+         │                        STOPPED (container_stop)
+         │                               │
+         ▼                               ▼
+DELETED (container_delete, tombstone pattern)
 ```
 
-- `create` validates name `[A-Za-z0-9_-]{1,63}`, cpu 0–100, stores the
-  *intended* cgroup path `/sys/fs/cgroup/nexusdb/<name>` (recorded only —
-  not created until the cgroups phase) and the configured DB-engine path.
-- `start` allowed from CREATED/STOPPED; spawns the placeholder child and
-  records its PID. Second `start` → `NEXUS_ERR_STATE`.
-- `stop` sends SIGTERM, waits ~2s reaping via `waitpid`, then SIGKILL +
-  blocking reap. No zombies. Non-RUNNING → `NEXUS_ERR_STATE`.
-- `delete` refuses RUNNING containers (stop first — no orphans). Keeps a
-  DELETED tombstone so status-after-delete is observable; re-creating the
-  same name reuses the slot.
+- **create**: Validates name `[A-Za-z0-9_-]{1,63}`, cpu `0–100`. Creates container subcgroup `/sys/fs/cgroup/nexusdb/<name>`, configures `memory.max` and `cpu.max`.
+- **start**: Permitted from `CREATED` or `STOPPED`. Spawns child process, applies namespaces, attaches PID to `cgroup.procs`, moves state to `RUNNING`. Second `start` returns `NEXUS_ERR_STATE`.
+- **metrics**: Queries real-time memory usage (`memory.current`), memory limit (`memory.max`), CPU time, and computes memory pressure ratio for the OS–DB Bridge.
+- **stop**: Sends `SIGTERM`, grace period with `waitpid`, `SIGKILL` fallback. Prevents zombie processes. Moves state to `STOPPED`.
+- **delete**: Refuses `RUNNING` containers (must be stopped first to prevent orphaned processes). Destroys container cgroup. Preserves tombstone for observable post-deletion status; reusing the same name recycles the slot cleanly.
 
-## Integration boundaries (do not cross)
+## Integration Boundaries
 
-- DB engine (Digvijay): only the `db_engine` path string is stored. The
-  placeholder child will be replaced by fork/exec of that binary in the
-  DB-launch phase. No SQL/pages/LRU/WAL here.
-- OS–DB Bridge (Rehan): reads state via `container_get`/`container_status`
-  (name, id, pid, state, `memory_bytes`, `cpu_percent`, `cgroup_path`).
-  Adaptation policy lives in the Bridge, never here.
+- **Database Engine (Digvijay)**: The container runtime launches the configured `db_engine` executable. Storage, page format, buffer pool, and recovery reside entirely in the DB engine module.
+- **OS–DB Bridge (Rehan)**: Queries resource metrics via `container_metrics(name, &metrics)`. The bridge evaluates pressure thresholds ($>85\%$ shrink, $<60\%$ grow) and triggers buffer pool resizing in the DB engine.
 
-## Build / test (Ubuntu/WSL2)
+## Build and Verification
 
-```sh
+### Linux (Ubuntu 22.04 / WSL2)
+```bash
+sudo ./scripts/setup.sh
+sudo ./scripts/setup_cgroups.sh
 make test
 ```
 
-Expected: `ALL TESTS PASSED`. On a Windows dev machine without WSL, use
-`mingw32-make test` — same assertions, placeholder child is `ping.exe`.
-
-## Limitations (to be fixed in later phases)
-
-- Registry is in-process memory: no persistence across CLI invocations
-  (a file-backed state store comes with the CLI/runtime-coordinator work).
-- No namespaces / cgroups / CPU+memory enforcement yet.
-- No async SIGCHLD reaper: a crashed child is reaped on `stop`/`delete`,
-  not immediately.
-- Single-threaded registry, no locking.
-- Requires pthreads? No. Requires root? No — foundation needs none.
+### Windows Dev Environment (MinGW)
+```cmd
+mingw32-make test
+```
+All tests pass cleanly with `-Wall -Wextra -Werror`.

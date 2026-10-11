@@ -11,10 +11,15 @@
 // check, exit 0 on success, 1 on any failure.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <memory>
 #include <string>
+
+#if defined(__has_include) && __has_include(<filesystem>) && (!defined(__GNUC__) || __GNUC__ >= 8)
+#include <filesystem>
+#define NEXUS_HAS_FILESYSTEM 1
+#endif
 
 #include "common/config.h"
 #include "db/page.h"
@@ -39,14 +44,34 @@ int g_failures = 0;
   } while (0)
 
 std::string TestDbPath() {
+#ifdef NEXUS_HAS_FILESYSTEM
   return (std::filesystem::temp_directory_path() / "nexusdb_storage_test.db")
       .string();
+#else
+  const char* tmp = std::getenv("TEMP");
+  if (!tmp) tmp = std::getenv("TMP");
+  if (!tmp) tmp = ".";
+  std::string s(tmp);
+  if (!s.empty() && s.back() != '/' && s.back() != '\\') {
+#ifdef _WIN32
+    s += "\\";
+#else
+    s += "/";
+#endif
+  }
+  s += "nexusdb_storage_test.db";
+  return s;
+#endif
 }
 
 // Removes the test database file if present (fresh start / cleanup).
 void RemoveDb(const std::string& path) {
+#ifdef NEXUS_HAS_FILESYSTEM
   std::error_code ec;
   std::filesystem::remove(path, ec);
+#else
+  std::remove(path.c_str());
+#endif
 }
 
 // Fills a page with a repeating byte pattern for exact-match verification.

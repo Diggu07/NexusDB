@@ -9,6 +9,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "container/cgroup.h"
 #include "container/process.h"
 
 #define NEXUS_MAX_CONTAINERS 64
@@ -126,10 +127,10 @@ int container_create(const char *name,
     s->c.pid = -1;
     s->c.memory_bytes = memory_bytes;
     s->c.cpu_percent = cpu_percent;
-    /* Intended cgroup v2 path — recorded for Rehan's Bridge, NOT created
-     * until the cgroups phase. */
-    snprintf(s->c.cgroup_path, sizeof(s->c.cgroup_path),
-             "/sys/fs/cgroup/nexusdb/%s", name);
+    /* Initialize and configure container cgroups v2 controller */
+    (void)cgroup_create(name, s->c.cgroup_path, sizeof(s->c.cgroup_path));
+    (void)cgroup_set_limits(s->c.cgroup_path, memory_bytes, cpu_percent);
+
     if (db_engine != NULL)
         snprintf(s->c.db_engine, sizeof(s->c.db_engine), "%s", db_engine);
     else
@@ -160,6 +161,7 @@ int container_start(const char *name)
 
     s->c.pid = pid;
     s->c.state = NEXUS_RUNNING;
+    (void)cgroup_attach(s->c.cgroup_path, pid);
     return NEXUS_OK;
 }
 
@@ -205,8 +207,24 @@ int container_delete(const char *name)
             (void)process_stop(s->c.pid);
         s->c.pid = -1;
     }
+    (void)cgroup_destroy(s->c.cgroup_path);
     s->c.state = NEXUS_DELETED; /* keep tombstone for status-after-delete */
     return NEXUS_OK;
+}
+
+int container_metrics(const char *name, nexus_cgroup_metrics_t *metrics)
+{
+    slot_t *s;
+
+    if (!name_valid(name) || metrics == NULL)
+        return NEXUS_ERR_INVALID;
+    s = find_slot(name);
+    if (s == NULL)
+        return NEXUS_ERR_NOT_FOUND;
+    if (s->c.state == NEXUS_DELETED)
+        return NEXUS_ERR_STATE;
+
+    return cgroup_read_metrics(s->c.cgroup_path, metrics);
 }
 
 int container_status(const char *name, char *buf, size_t buflen)
