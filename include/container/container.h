@@ -100,8 +100,13 @@ int container_delete(const char *name);
  * terminated). Works for DELETED tombstones too. */
 int container_status(const char *name, char *buf, size_t buflen);
 
+#include "container/cgroup.h"
+
 /* Read-only lookup; NULL if the name was never created. */
 const nexus_container_t *container_get(const char *name);
+
+/* Query real-time resource metrics (memory usage, limit, CPU, pressure) from container's cgroup. */
+int container_metrics(const char *name, nexus_cgroup_metrics_t *metrics);
 
 /* Helpers. */
 const char *container_state_str(nexus_state_t state);

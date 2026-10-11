@@ -28,6 +28,8 @@ include_directories(include)
 
 add_executable(nexus_container_test
   src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
   src/container/process.c
   tests/container/container_test.c
 )

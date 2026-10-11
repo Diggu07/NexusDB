@@ -36,9 +36,13 @@ BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/nexus_container_test$(EXE)
 
 SRCS := src/container/container.c \
+        src/container/cgroup.c \
+        src/container/namespace.c \
         src/container/process.c \
         tests/container/container_test.c
 OBJS := $(BUILD_DIR)/container.o \
+        $(BUILD_DIR)/cgroup.o \
+        $(BUILD_DIR)/namespace.o \
         $(BUILD_DIR)/process.o \
         $(BUILD_DIR)/container_test.o
 
@@ -57,13 +61,19 @@ else
 	mkdir -p $(BUILD_DIR)
 endif
 
-$(BUILD_DIR)/container.o: src/container/container.c include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/container.o: src/container/container.c include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/cgroup.o: src/container/cgroup.c include/container/cgroup.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/namespace.o: src/container/namespace.c include/container/namespace.h include/container/container.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/process.o: src/container/process.c include/container/process.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/container_test.o: tests/container/container_test.c include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/container_test.o: tests/container/container_test.c include/container/container.h include/container/cgroup.h include/container/namespace.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(TEST_BIN): $(OBJS)
