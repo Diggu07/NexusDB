@@ -8,6 +8,8 @@
 #include "db/page_storage.h"
 
 #include <cstdint>
+#include <filesystem>
+#include <system_error>
 #include <utility>
 
 namespace nexusdb {
@@ -42,7 +44,22 @@ Status PageStorage::Open(const std::string& path,
   std::fstream file(path,
                     std::ios::in | std::ios::out | std::ios::binary);
   if (!file.is_open()) {
-    // Missing file: create it, then reopen read/write.
+    // The read/write open failed. Only create a brand-new file when nothing
+    // exists at `path`. Reopening with std::ios::out truncates, so doing it
+    // for a path that already holds a database (but could not be opened
+    // read/write, e.g. write-only permissions or a directory) would silently
+    // destroy it. Refuse instead of losing data.
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    if (ec) {
+      return Status::Error(DbError::kIoError,
+                           "cannot stat database file: " + path);
+    }
+    if (exists) {
+      return Status::Error(
+          DbError::kIoError,
+          "cannot open existing database file for read/write: " + path);
+    }
     file.clear();
     file.open(path, std::ios::out | std::ios::binary);
     if (!file.is_open()) {

@@ -11,8 +11,10 @@
 // check, exit 0 on success, 1 on any failure.
 
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -227,6 +229,66 @@ int main() {
     CHECK("write to allocated page works now",
           db->WritePage(p).ok() && db->ReadPage(0, &p).ok());
     CHECK("close error-path db", db->Close().ok());
+  }
+  RemoveDb(path);
+
+  // ---- 6. Corruption safety: Open must never truncate an existing file ----
+  {
+    std::error_code ec;
+
+    // 6a. A foreign file whose size is not a whole number of pages is
+    // refused, and its bytes are left exactly as they were.
+    const std::string foreign = path + ".foreign";
+    {
+      std::ofstream out(foreign, std::ios::binary | std::ios::trunc);
+      const std::string junk(static_cast<std::size_t>(nexusdb::kPageSize) + 1,
+                             'X');
+      out.write(junk.data(), static_cast<std::streamsize>(junk.size()));
+    }
+    const std::uintmax_t foreign_before =
+        std::filesystem::file_size(foreign);
+    {
+      std::unique_ptr<PageStorage> db;
+      CHECK("foreign-sized file rejected",
+            !PageStorage::Open(foreign, &db).ok());
+    }
+    CHECK("foreign file left intact (not truncated)",
+          std::filesystem::file_size(foreign) == foreign_before);
+    std::filesystem::remove(foreign, ec);
+
+    // 6b. Opening an existing directory must fail without removing it. This
+    // also exercises the "present but not openable read/write" guard.
+    const std::string dir = path + ".dir";
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directory(dir, ec);
+    CHECK("test directory created", std::filesystem::is_directory(dir));
+    {
+      std::unique_ptr<PageStorage> db;
+      CHECK("existing directory refused", !PageStorage::Open(dir, &db).ok());
+    }
+    CHECK("existing directory left intact",
+          std::filesystem::is_directory(dir));
+    std::filesystem::remove_all(dir, ec);
+  }
+
+  // ---- 7. Documented contracts: dirty ownership and post-close errors ----
+  {
+    std::unique_ptr<PageStorage> db;
+    CHECK("open contract db", PageStorage::Open(path, &db).ok());
+    Page p;
+    CHECK("allocate contract page", db->AllocatePage(&p).ok());
+    FillPattern(&p, 0xCD);
+    CHECK("page is dirty before write", p.IsDirty());
+    CHECK("write succeeds", db->WritePage(p).ok());
+    CHECK("WritePage leaves caller dirty flag untouched", p.IsDirty());
+
+    Page back;
+    CHECK("read back allocated page", db->ReadPage(0, &back).ok());
+    CHECK("ReadPage yields a clean page", !back.IsDirty());
+    CHECK("read data matches written pattern", MatchesPattern(back, 0xCD));
+
+    CHECK("close contract db", db->Close().ok());
+    CHECK("Flush after close fails (kBadState)", !db->Flush().ok());
   }
   RemoveDb(path);
 

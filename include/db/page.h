@@ -7,6 +7,11 @@
 // the Buffer Pool, LRU, the Query Processor, or the Manager. Dirty-state
 // lifecycle (who sets/clears it, when it is written back) belongs to the
 // future Buffer Pool; PageStorage never touches the flag.
+//
+// Ownership: a Page is a value type that owns its kPageSize buffer. Copying
+// a Page copies the buffer. PageStorage returns pages by value and keeps no
+// reference to them; a buffer-pool frame that caches a Page owns it until
+// eviction.
 
 #ifndef NEXUSDB_DB_PAGE_H
 #define NEXUSDB_DB_PAGE_H

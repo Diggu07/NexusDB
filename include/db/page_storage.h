@@ -19,6 +19,24 @@
 //   - Dependency direction: (future) Buffer Pool -> PageStorage -> Page.
 //     PageStorage does not depend on any buffering, caching, SQL, WAL,
 //     or transaction machinery.
+//
+// Buffer-pool-facing contract (Phase 2 depends on these invariants):
+//   - PageStorage is the ONLY component allowed to touch the database file;
+//     higher layers (buffer pool, records, queries) go through this API.
+//   - Page ids are dense and stable. AllocatePage returns the next id
+//     (file_size / kPageSize) and ids are never reused (there is no free
+//     list yet), so a page id keeps naming the same page for the life of
+//     the file.
+//   - ReadPage/AllocatePage return a fully owned Page value. PageStorage
+//     retains no pointer or reference into it; a buffer-pool frame owns the
+//     Page until it is evicted.
+//   - WritePage is write-through and deliberately leaves the caller's dirty
+//     flag untouched, so the buffer pool alone decides when a frame is
+//     clean.
+//   - Every fallible call reports failure via Status; no exception escapes
+//     this API.
+//   - Open never truncates or destroys an existing file, even when it cannot
+//     be opened read/write.
 
 #ifndef NEXUSDB_DB_PAGE_STORAGE_H
 #define NEXUSDB_DB_PAGE_STORAGE_H
