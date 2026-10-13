@@ -1,13 +1,16 @@
 // NexusDB — fixed-capacity page buffer pool implementation (Phase 2).
 //
-// Replacement is intentionally simple and deterministic in this phase: the
-// lowest-indexed unpinned frame is reused (free frames first). LRU replaces
-// this in the next phase. A resident page is always served from memory; a
-// missing page is read through PageStorage exactly once. Dirty victims are
-// written back before reuse, so no committed modification is lost.
+// Replacement is true LRU: a free frame is used first; otherwise the least
+// recently used UNPINNED frame is reused, and a dirty victim is written back
+// before reuse so no committed modification is lost. Recency is a per-frame
+// monotonic access-clock stamp updated on every successful Fetch (hit or
+// load). A resident page is always served from memory; a missing page is read
+// through PageStorage exactly once.
 
 #include "db/buffer_pool.h"
 
+#include <algorithm>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -52,27 +55,62 @@ std::size_t BufferPool::FindFrame(Page::PageId id) const {
   return kNoFrame;
 }
 
+std::uint64_t BufferPool::NextTimestamp() {
+  if (access_clock_ == std::numeric_limits<std::uint64_t>::max()) {
+    RenumberClock();
+  }
+  return ++access_clock_;
+}
+
+void BufferPool::RenumberClock() {
+  // Compact the in-use frames' stamps to 1..n in recency order. Free frames
+  // are ignored: their stale stamps are overwritten when next installed.
+  std::vector<std::size_t> order;
+  order.reserve(capacity_);
+  for (std::size_t i = 0; i < capacity_; ++i) {
+    if (frames_[i].in_use) {
+      order.push_back(i);
+    }
+  }
+  std::sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) {
+    return frames_[a].last_used < frames_[b].last_used;
+  });
+  std::uint64_t stamp = 0;
+  for (std::size_t frame : order) {
+    frames_[frame].last_used = ++stamp;
+  }
+  access_clock_ = stamp;
+}
+
 Status BufferPool::AcquireFrame(std::size_t* out) {
-  // Prefer a never-used frame.
+  // Prefer a never-used frame; nothing needs evicting.
   for (std::size_t i = 0; i < capacity_; ++i) {
     if (!frames_[i].in_use) {
       *out = i;
       return Status::Ok();
     }
   }
-  // Otherwise reuse the lowest-indexed unpinned frame (temporary policy).
+  // Otherwise evict the least recently used unpinned frame. Strict '<' keeps
+  // the lowest-indexed frame on a tie, so the choice stays deterministic.
+  std::size_t victim = kNoFrame;
+  std::uint64_t oldest = std::numeric_limits<std::uint64_t>::max();
   for (std::size_t i = 0; i < capacity_; ++i) {
-    if (frames_[i].pin_count == 0) {
-      Status s = FlushFrame(i);  // persist a dirty victim before reuse
-      if (!s.ok()) {
-        return s;
-      }
-      *out = i;
-      return Status::Ok();
+    const Frame& f = frames_[i];
+    if (f.in_use && f.pin_count == 0 && f.last_used < oldest) {
+      oldest = f.last_used;
+      victim = i;
     }
   }
-  return Status::Error(DbError::kBufferFull,
-                       "all frames are pinned; page cannot be loaded");
+  if (victim == kNoFrame) {
+    return Status::Error(DbError::kBufferFull,
+                         "all frames are pinned; page cannot be loaded");
+  }
+  Status s = FlushFrame(victim);  // persist a dirty victim before reuse
+  if (!s.ok()) {
+    return s;  // victim and its dirty state are left untouched
+  }
+  *out = victim;
+  return Status::Ok();
 }
 
 Status BufferPool::Fetch(Page::PageId id, Handle* out) {
@@ -90,6 +128,7 @@ Status BufferPool::Fetch(Page::PageId id, Handle* out) {
   const std::size_t resident = FindFrame(id);
   if (resident != kNoFrame) {
     frames_[resident].pin_count++;
+    frames_[resident].last_used = NextTimestamp();  // a hit counts as an access
     *out = Handle(this, resident);
     return Status::Ok();
   }
@@ -111,6 +150,7 @@ Status BufferPool::Fetch(Page::PageId id, Handle* out) {
   Frame& frame = frames_[slot];
   frame.page = page;
   frame.pin_count = 1;
+  frame.last_used = NextTimestamp();  // a freshly loaded page is most recent
   frame.in_use = true;
   *out = Handle(this, slot);
   return Status::Ok();

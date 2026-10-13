@@ -5,11 +5,13 @@
 // touches the database file; the pool keeps hot pages resident and mediates
 // all reads and writes through it.
 //
-// This is the Phase 2 foundation and deliberately has NO LRU policy yet.
-// When the pool is full and a non-resident page is requested, the pool reuses
-// the lowest-indexed unpinned frame. That replacement rule is a documented
-// TEMPORARY, deterministic stand-in; the LRU policy replaces it in the next
-// phase. Pinned frames are never evicted, under any circumstances.
+// Replacement is true LRU (least recently used). When the pool is full and a
+// non-resident page is requested, the least recently used UNPINNED frame is
+// evicted; a dirty victim is written back first. Recency is tracked per frame
+// with a monotonic access clock: every successful Fetch -- a cache hit or a
+// newly loaded page -- stamps that frame as most recently used. Failed
+// operations never advance recency. Pinned frames are never evicted; if every
+// frame is pinned, Fetch fails with kBufferFull.
 //
 // Ownership contract
 // ------------------
@@ -160,6 +162,7 @@ class BufferPool {
   struct Frame {
     Page page;
     std::size_t pin_count = 0;
+    std::uint64_t last_used = 0;  // access-clock stamp; higher == more recent
     bool in_use = false;
   };
 
@@ -167,9 +170,11 @@ class BufferPool {
   std::size_t FindFrame(Page::PageId id) const;
 
   // Chooses a frame to hold a page being loaded: a free frame if one exists,
-  // otherwise the lowest-indexed unpinned frame (flushing it first if dirty).
-  // Writes the chosen index to `*out`. Fails with kBufferFull when every frame
-  // is pinned, or with the flush error when a victim could not be written.
+  // otherwise the least recently used UNPINNED frame (flushing it first if
+  // dirty). Recency is read from Frame::last_used. Writes the chosen index to
+  // `*out`. Fails with kBufferFull when every frame is pinned, or with the
+  // flush error when a dirty victim could not be written (the victim is then
+  // left intact so no data is lost).
   Status AcquireFrame(std::size_t* out);
 
   // Flushes frame `frame` if it is resident and dirty; clears the dirty flag
@@ -178,9 +183,18 @@ class BufferPool {
 
   void UnpinFrame(std::size_t frame);
 
+  // Returns the next monotonic access stamp (1, 2, 3, ...). If the 64-bit
+  // clock would overflow, every in-use frame is renumbered in recency order
+  // first, so recency can never wrap. Overflow needs 2^64 accesses and is
+  // effectively unreachable; the guard keeps the ordering invariant
+  // unconditional.
+  std::uint64_t NextTimestamp();
+  void RenumberClock();
+
   PageStorage* storage_;
   std::size_t capacity_;
   std::vector<Frame> frames_;
+  std::uint64_t access_clock_ = 0;
 };
 
 }  // namespace nexusdb

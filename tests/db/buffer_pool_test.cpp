@@ -2,8 +2,10 @@
 //
 // Exercises the fixed-capacity BufferPool against a real PageStorage file:
 // initialization, cache hits, pin/unpin accounting, dirty tracking, flush,
-// persistence across a storage reopen, capacity enforcement, the all-pinned
-// error, invalid ids/handles, storage-error propagation, and clean shutdown.
+// persistence across a storage reopen, LRU eviction (recency on hits, pinned
+// victims skipped, dirty victims written back, failed fetches not disturbing
+// state), the all-pinned error, invalid ids/handles, storage-error propagation,
+// and clean shutdown.
 //
 // Same plain PASS/FAIL style as the other DB tests: every check goes through
 // a real database file in the OS temp directory, removed before and after.
@@ -299,7 +301,7 @@ int main() {
   }
   RemoveDb(path);
 
-  // ---- 8. Capacity enforcement and deterministic eviction ----
+  // ---- 8. Capacity enforcement and deterministic LRU eviction ----
   {
     std::unique_ptr<PageStorage> storage;
     CHECK("open storage for capacity",
@@ -323,7 +325,7 @@ int main() {
     CHECK("fetch page 2 evicts an unpinned frame", pool->Fetch(2, &h2).ok());
     CHECK("size stays at capacity", pool->size() == 2);
     CHECK("new page resident", pool->Contains(2));
-    CHECK("lowest unpinned frame evicted (page 0)",
+    CHECK("least recently used frame evicted (page 0)",
           !pool->Contains(0));
   }
   RemoveDb(path);
@@ -435,6 +437,285 @@ int main() {
   }
 
   RemoveDb(path);
+
+  // ---- 13. LRU: a cache hit promotes the page; the true LRU is evicted ----
+  //
+  // This sequence is what distinguishes LRU from the old lowest-index policy:
+  // after loading 0 then 1 and re-accessing 0, page 0 is most recently used and
+  // page 1 is least recently used. A lowest-index policy would evict page 0.
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("open storage for LRU recency",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("allocate LRU recency page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("create LRU recency pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("LRU recency: fetch 0", pool->Fetch(0, &h0).ok());
+      BufferPool::Handle h1;
+      CHECK("LRU recency: fetch 1", pool->Fetch(1, &h1).ok());
+    }
+    {
+      BufferPool::Handle h0;
+      CHECK("LRU recency: re-fetch 0 promotes it",
+            pool->Fetch(0, &h0).ok());
+    }
+
+    BufferPool::Handle h2;
+    CHECK("LRU recency: fetch 2 succeeds", pool->Fetch(2, &h2).ok());
+    CHECK("LRU recency: most recently used page 0 survives",
+          pool->Contains(0));
+    CHECK("LRU recency: newly loaded page 2 is resident", pool->Contains(2));
+    CHECK("LRU recency: least recently used page 1 evicted",
+          !pool->Contains(1));
+  }
+  RemoveDb(path);
+
+  // ---- 14. LRU: a pinned least-recently-used frame is skipped ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("open storage for LRU pinned",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("allocate LRU pinned page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("create LRU pinned pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+
+    BufferPool::Handle pinned0;
+    CHECK("LRU pinned: fetch 0 and pin it", pool->Fetch(0, &pinned0).ok());
+    {
+      BufferPool::Handle h1;
+      CHECK("LRU pinned: fetch 1 then unpin", pool->Fetch(1, &h1).ok());
+    }
+
+    BufferPool::Handle h2;
+    CHECK("LRU pinned: fetch 2 succeeds", pool->Fetch(2, &h2).ok());
+    CHECK("LRU pinned: pinned (least recent) page 0 survives",
+          pool->Contains(0));
+    CHECK("LRU pinned: page 0 still pinned", pool->PinCount(0) == 1);
+    CHECK("LRU pinned: unpinned page 1 evicted", !pool->Contains(1));
+    CHECK("LRU pinned: page 2 is resident", pool->Contains(2));
+  }
+  RemoveDb(path);
+
+  // ---- 15. LRU: all frames pinned -> kBufferFull, no metadata change ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("open storage for LRU all-pinned",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("allocate LRU all-pinned page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("create LRU all-pinned pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    BufferPool::Handle p0;
+    BufferPool::Handle p1;
+    CHECK("LRU all-pinned: fetch 0", pool->Fetch(0, &p0).ok());
+    CHECK("LRU all-pinned: fetch 1", pool->Fetch(1, &p1).ok());
+
+    BufferPool::Handle h2;
+    const Status s = pool->Fetch(2, &h2);
+    CHECK("LRU all-pinned: fetch fails", !s.ok());
+    CHECK("LRU all-pinned: reports kBufferFull",
+          s.code == DbError::kBufferFull);
+    CHECK("LRU all-pinned: failed fetch leaves handle empty", !h2.valid());
+    CHECK("LRU all-pinned: resident pages untouched",
+          pool->Contains(0) && pool->Contains(1));
+    CHECK("LRU all-pinned: pin counts untouched",
+          pool->PinCount(0) == 1 && pool->PinCount(1) == 1);
+  }
+  RemoveDb(path);
+
+  // ---- 16. LRU: a dirty victim is written back before its frame is reused ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("open storage for LRU dirty victim",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("allocate LRU dirty victim page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("create LRU dirty victim pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("LRU dirty victim: fetch 0", pool->Fetch(0, &h0).ok());
+      FillPattern(&h0.page(), 0xA5);  // dirty; page 0 becomes least recent
+    }
+    {
+      BufferPool::Handle h1;
+      CHECK("LRU dirty victim: fetch 1", pool->Fetch(1, &h1).ok());
+    }
+
+    BufferPool::Handle h2;
+    CHECK("LRU dirty victim: fetch 2 evicts dirty page 0",
+          pool->Fetch(2, &h2).ok());
+    CHECK("LRU dirty victim: page 0 evicted", !pool->Contains(0));
+    CHECK("LRU dirty victim: page 2 resident", pool->Contains(2));
+
+    // The evicted dirty page must have been written through to the file.
+    Page persisted;
+    CHECK("LRU dirty victim: evicted page readable from storage",
+          storage->ReadPage(0, &persisted).ok());
+    CHECK("LRU dirty victim: dirty bytes persisted",
+          MatchesPattern(persisted, 0xA5));
+    CHECK("LRU dirty victim: persisted page is clean", !persisted.IsDirty());
+  }
+  RemoveDb(path);
+
+  // ---- 17. LRU: a failed fetch never disturbs residency or recency ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("open storage for LRU failed fetch",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 4; ++i) {
+      Page p;
+      CHECK("allocate LRU failed fetch page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("create LRU failed fetch pool",
+          BufferPool::Create(storage.get(), 3, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("LRU failed fetch: fetch 0", pool->Fetch(0, &h0).ok());
+      BufferPool::Handle h1;
+      CHECK("LRU failed fetch: fetch 1", pool->Fetch(1, &h1).ok());
+      BufferPool::Handle h2;
+      CHECK("LRU failed fetch: fetch 2", pool->Fetch(2, &h2).ok());
+    }
+
+    BufferPool::Handle bad;
+    const Status s = pool->Fetch(9, &bad);  // beyond EOF: fails before eviction
+    CHECK("LRU failed fetch: out-of-range fetch fails", !s.ok());
+    CHECK("LRU failed fetch: out-of-range is kNotFound",
+          s.code == DbError::kNotFound);
+    CHECK("LRU failed fetch: handle left empty", !bad.valid());
+    CHECK("LRU failed fetch: residency unchanged by the failure",
+          pool->size() == 3 && pool->Contains(0) && pool->Contains(1) &&
+              pool->Contains(2));
+
+    // If the failed fetch had advanced recency, page 0 would no longer be the
+    // eviction victim here. It must still be page 0.
+    BufferPool::Handle h3;
+    CHECK("LRU failed fetch: fetch 3 succeeds", pool->Fetch(3, &h3).ok());
+    CHECK("LRU failed fetch: recency preserved (page 0 still evicted)",
+          !pool->Contains(0));
+    CHECK("LRU failed fetch: pages 1-3 resident",
+          pool->Contains(1) && pool->Contains(2) && pool->Contains(3));
+  }
+  RemoveDb(path);
+
+  // ---- 18. LRU: unambiguous victim across repeated evictions ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("open storage for LRU sequence",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 5; ++i) {
+      Page p;
+      CHECK("allocate LRU sequence page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("create LRU sequence pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h;
+      CHECK("LRU sequence: fetch 0", pool->Fetch(0, &h).ok());
+    }
+    {
+      BufferPool::Handle h;
+      CHECK("LRU sequence: fetch 1", pool->Fetch(1, &h).ok());
+    }
+    {
+      BufferPool::Handle h;
+      CHECK("LRU sequence: fetch 2 evicts 0", pool->Fetch(2, &h).ok());
+    }
+    CHECK("LRU sequence: after fetching 2", !pool->Contains(0) &&
+                                                pool->Contains(1) &&
+                                                pool->Contains(2));
+    {
+      BufferPool::Handle h;
+      CHECK("LRU sequence: fetch 3 evicts 1", pool->Fetch(3, &h).ok());
+    }
+    CHECK("LRU sequence: after fetching 3", !pool->Contains(1) &&
+                                                pool->Contains(2) &&
+                                                pool->Contains(3));
+    {
+      BufferPool::Handle h;
+      CHECK("LRU sequence: re-fetch 2 promotes it", pool->Fetch(2, &h).ok());
+    }
+    BufferPool::Handle h4;
+    CHECK("LRU sequence: fetch 4 evicts the promoted-order LRU (3)",
+          pool->Fetch(4, &h4).ok());
+    CHECK("LRU sequence: page 2 survives, page 3 evicted",
+          pool->Contains(2) && pool->Contains(4) && !pool->Contains(3));
+    CHECK("LRU sequence: size stays at capacity", pool->size() == 2);
+  }
+  RemoveDb(path);
+
+  // ---- 19. LRU: state preserved across a failed fetch (write-failure note) ----
+  //
+  // The dirty-victim WRITE-failure branch of AcquireFrame is intentionally not
+  // driven to failure here: PageStorage offers no fault-injection seam, and
+  // ReadPage and WritePage share one fstream, so any condition that makes
+  // WritePage fail (e.g. a closed file) makes the preceding ReadPage fail
+  // first. Fetch would then return at the read step and never reach the flush
+  // path -- that closed-storage read failure is covered by section 12. What is
+  // checked here is the observable invariant that a failed miss leaves existing
+  // resident, dirty state completely intact.
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("open storage for LRU failure state",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 2; ++i) {
+      Page p;
+      CHECK("allocate LRU failure-state page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("create LRU failure-state pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("LRU failure state: fetch 0 and dirty it",
+            pool->Fetch(0, &h0).ok());
+      FillPattern(&h0.page(), 0x33);  // dirty, unpinned
+    }
+
+    CHECK("LRU failure state: close storage", storage->Close().ok());
+    BufferPool::Handle missing;
+    const Status s = pool->Fetch(1, &missing);  // read fails before eviction
+    CHECK("LRU failure state: miss over closed storage fails", !s.ok());
+    CHECK("LRU failure state: miss reports kBadState",
+          s.code == DbError::kBadState);
+    CHECK("LRU failure state: handle left empty", !missing.valid());
+
+    BufferPool::Handle still0;
+    CHECK("LRU failure state: resident page still served (cache hit)",
+          pool->Fetch(0, &still0).ok());
+    CHECK("LRU failure state: dirty flag preserved by the failed miss",
+          still0.IsDirty());
+    CHECK("LRU failure state: data preserved by the failed miss",
+          MatchesPattern(still0.page(), 0x33));
+  }
+  RemoveDb(path);
+
   printf("\n=== %s (%d failure(s)) ===\n",
          g_failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", g_failures);
   return g_failures == 0 ? 0 : 1;
