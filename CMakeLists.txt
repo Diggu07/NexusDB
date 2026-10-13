@@ -34,6 +34,13 @@ add_executable(nexus_container_test
   tests/container/container_test.c
 )
 
+# Part 1: isolated cgroup reliability test (NEXUS_CGROUP_ROOT, no sudo).
+add_executable(nexus_cgroup_test
+  src/container/cgroup.c
+  src/container/process.c
+  tests/container/cgroup_test.c
+)
+
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
 add_executable(db_storage_test
   src/db/storage/page.cpp
@@ -43,4 +50,5 @@ add_executable(db_storage_test
 
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
+add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
 add_test(NAME db_storage COMMAND db_storage_test)
