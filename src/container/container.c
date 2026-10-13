@@ -103,6 +103,8 @@ int container_create(const char *name,
                      const char *db_engine)
 {
     slot_t *dup, *s;
+    char tmp_path[NEXUS_PATH_MAX];
+    int rc;
 
     if (!name_valid(name))
         return NEXUS_ERR_INVALID;
@@ -119,6 +121,18 @@ int container_create(const char *name,
     if (s == NULL)
         return NEXUS_ERR_NOMEM;
 
+    /* Provision cgroups BEFORE mutating the slot so a resource failure never
+     * corrupts the registry (and never reports success for unenforced limits). */
+    (void)cgroup_init(NULL); /* best-effort root setup; create() surfaces real errors */
+    rc = cgroup_create(name, tmp_path, sizeof(tmp_path));
+    if (rc != NEXUS_OK)
+        return rc;
+    rc = cgroup_set_limits(tmp_path, memory_bytes, cpu_percent);
+    if (rc != NEXUS_OK) {
+        (void)cgroup_destroy(tmp_path);
+        return rc;
+    }
+
     memset(s, 0, sizeof(*s));
     s->in_use = 1;
     snprintf(s->c.name, sizeof(s->c.name), "%s", name);
@@ -127,9 +141,7 @@ int container_create(const char *name,
     s->c.pid = -1;
     s->c.memory_bytes = memory_bytes;
     s->c.cpu_percent = cpu_percent;
-    /* Initialize and configure container cgroups v2 controller */
-    (void)cgroup_create(name, s->c.cgroup_path, sizeof(s->c.cgroup_path));
-    (void)cgroup_set_limits(s->c.cgroup_path, memory_bytes, cpu_percent);
+    snprintf(s->c.cgroup_path, sizeof(s->c.cgroup_path), "%s", tmp_path);
 
     if (db_engine != NULL)
         snprintf(s->c.db_engine, sizeof(s->c.db_engine), "%s", db_engine);
@@ -159,9 +171,15 @@ int container_start(const char *name)
     if (pid <= 0)
         return NEXUS_ERR_PROCESS;
 
+    /* A limit that was not applied must never be reported as success: if the
+     * child cannot join its cgroup, reap it and stay in the prior state. */
+    if (cgroup_attach(s->c.cgroup_path, pid) != NEXUS_OK) {
+        (void)process_stop(pid);
+        s->c.pid = -1;
+        return NEXUS_ERR_PROCESS;
+    }
     s->c.pid = pid;
     s->c.state = NEXUS_RUNNING;
-    (void)cgroup_attach(s->c.cgroup_path, pid);
     return NEXUS_OK;
 }
 
@@ -207,7 +225,10 @@ int container_delete(const char *name)
             (void)process_stop(s->c.pid);
         s->c.pid = -1;
     }
-    (void)cgroup_destroy(s->c.cgroup_path);
+    /* A failed destroy keeps the current state so the caller can retry;
+     * only a removed cgroup becomes a DELETED tombstone. */
+    if (cgroup_destroy(s->c.cgroup_path) != NEXUS_OK)
+        return NEXUS_ERR_PROCESS;
     s->c.state = NEXUS_DELETED; /* keep tombstone for status-after-delete */
     return NEXUS_OK;
 }

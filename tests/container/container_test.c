@@ -31,6 +31,11 @@ int main(void)
 
     printf("=== NexusDB Container Engine: lifecycle test ===\n\n");
 
+    /* Part 1: explicit init (respects NEXUS_CGROUP_ROOT for Linux CI without
+     * sudo). Must succeed or resource enforcement cannot be trusted. */
+    rc = cgroup_init(NULL);
+    CHECK("cgroup_init root usable", rc == NEXUS_OK);
+
     /* 0. Validation: bad names / bad limits are rejected. */
     rc = container_create("", 0, 0, NULL);
     CHECK("reject empty name", rc == NEXUS_ERR_INVALID);

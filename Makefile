@@ -35,6 +35,9 @@ endif
 BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/nexus_container_test$(EXE)
 
+# Part 1: isolated cgroup reliability test (no sudo, NEXUS_CGROUP_ROOT).
+CGROUP_TEST_BIN := $(BUILD_DIR)/nexus_cgroup_test$(EXE)
+
 SRCS := src/container/container.c \
         src/container/cgroup.c \
         src/container/namespace.c \
@@ -46,13 +49,17 @@ OBJS := $(BUILD_DIR)/container.o \
         $(BUILD_DIR)/process.o \
         $(BUILD_DIR)/container_test.o
 
+CGROUP_OBJS := $(BUILD_DIR)/cgroup.o \
+               $(BUILD_DIR)/process.o \
+               $(BUILD_DIR)/cgroup_test.o
+
 # Phase 1 DB storage (Digvijay): Page + PageStorage, C++17.
 DB_TEST_BIN := $(BUILD_DIR)/db_storage_test$(EXE)
 DB_OBJS := $(BUILD_DIR)/page.o \
            $(BUILD_DIR)/page_storage.o \
            $(BUILD_DIR)/storage_test.o
 
-all: $(TEST_BIN) $(DB_TEST_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -79,6 +86,12 @@ $(BUILD_DIR)/container_test.o: tests/container/container_test.c include/containe
 $(TEST_BIN): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@
 
+$(BUILD_DIR)/cgroup_test.o: tests/container/cgroup_test.c include/container/cgroup.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(CGROUP_TEST_BIN): $(CGROUP_OBJS)
+	$(CC) $(CFLAGS) $(CGROUP_OBJS) -o $@
+
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -91,8 +104,9 @@ $(BUILD_DIR)/storage_test.o: tests/db/storage_test.cpp include/db/page_storage.h
 $(DB_TEST_BIN): $(DB_OBJS)
 	$(CXX) $(CXXFLAGS) $(DB_OBJS) -o $@
 
-test: $(TEST_BIN) $(DB_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN)
 	$(TEST_BIN)
+	$(CGROUP_TEST_BIN)
 	$(DB_TEST_BIN)
 
 clean:
