@@ -14,7 +14,12 @@
 // Ownership contract
 // ------------------
 //   - The BufferPool does NOT own the PageStorage. The storage must outlive
-//     the pool and must stay open for the pool's lifetime.
+//     the pool and must stay open for the pool's lifetime. The pool must be
+//     destroyed before its PageStorage.
+//   - A Handle does NOT own the pool. Every Handle must be released (destroyed
+//     or Unpin()ed) before its BufferPool is destroyed. Destroying the pool
+//     while a Handle is still alive is a programming error: the Handle would
+//     later dereference a destroyed pool.
 //   - The pool owns every Page it caches. Callers never own a cached Page and
 //     must NOT hold a raw Page pointer or reference beyond a live Handle.
 //   - A caller reaches a cached page only through Handle: a small RAII guard
@@ -26,7 +31,10 @@
 //     be reused and the reference must no longer be used.
 //   - A Handle is move-only; copying is deleted so exactly one guard owns each
 //     pin. Pins are counted: several Handles may pin one page, and the page is
-//     unpinned only when the last Handle releases it.
+//     unpinned only when the last Handle releases it. Move construction and
+//     move assignment both transfer the pin and leave the source empty;
+//     move-assigning onto a Handle that already holds a pin releases the old
+//     pin first, so no pin is ever leaked.
 //   - Dirty state lives on the Page itself (Page::MarkDirty). A successful
 //     FlushPage/FlushAll clears the page's dirty flag; a failed flush leaves
 //     it dirty. A dirty page is flushed before its frame is reused, so a

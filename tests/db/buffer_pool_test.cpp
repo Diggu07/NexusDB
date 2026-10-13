@@ -186,6 +186,24 @@ int main() {
     CHECK("pin count back to 0", pool->PinCount(0) == 0);
     CHECK("no pinned frames left", pool->pinned_frames() == 0);
     CHECK("a is now empty", !a.valid());
+
+    // Move assignment must transfer the source's pin and release the pin the
+    // target already held, so pins are never leaked or double-released.
+    BufferPool::Handle x;
+    CHECK("fetch x", pool->Fetch(0, &x).ok());
+    BufferPool::Handle y;
+    CHECK("fetch y", pool->Fetch(0, &y).ok());
+    CHECK("pin count is 2 before move-assign", pool->PinCount(0) == 2);
+
+    y = std::move(x);
+    CHECK("move-assign transfers the pin",
+          y.valid() && !x.valid() && pool->PinCount(0) == 1);
+    CHECK("move-assign released the target's old pin",
+          pool->pinned_frames() == 1);
+    CHECK("source is now empty after move-assign", !x.valid());
+
+    CHECK("unpin y", y.Unpin().ok());
+    CHECK("pin count cleared after move-assign test", pool->PinCount(0) == 0);
   }
   RemoveDb(path);
 
