@@ -48,7 +48,14 @@ DB_OBJS := $(BUILD_DIR)/page.o \
            $(BUILD_DIR)/page_storage.o \
            $(BUILD_DIR)/storage_test.o
 
-all: $(TEST_BIN) $(DB_TEST_BIN)
+# Phase 2 DB buffer pool (Digvijay): BufferPool over PageStorage, C++17.
+BUFFER_TEST_BIN := $(BUILD_DIR)/buffer_pool_test$(EXE)
+BUFFER_OBJS := $(BUILD_DIR)/page.o \
+               $(BUILD_DIR)/page_storage.o \
+               $(BUILD_DIR)/buffer_pool.o \
+               $(BUILD_DIR)/buffer_pool_test.o
+
+all: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -81,9 +88,19 @@ $(BUILD_DIR)/storage_test.o: tests/db/storage_test.cpp include/db/page_storage.h
 $(DB_TEST_BIN): $(DB_OBJS)
 	$(CXX) $(CXXFLAGS) $(DB_OBJS) -o $@
 
-test: $(TEST_BIN) $(DB_TEST_BIN)
+$(BUILD_DIR)/buffer_pool.o: src/db/buffer/buffer_pool.cpp include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer_pool.h include/db/page.h include/db/page_storage.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUFFER_TEST_BIN): $(BUFFER_OBJS)
+	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
+
+test: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN)
 	$(TEST_BIN)
 	$(DB_TEST_BIN)
+	$(BUFFER_TEST_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)

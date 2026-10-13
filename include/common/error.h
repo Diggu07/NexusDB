@@ -18,6 +18,7 @@ enum class DbError {
   kNotFound,         // page id beyond the end of the database file
   kIoError,          // open/seek/read/write/flush failure, short I/O
   kBadState,         // storage closed or never successfully opened
+  kBufferFull,       // buffer pool has no free or unpinned frame for the page
 };
 
 // Lightweight result type returned by fallible DB operations.
@@ -49,6 +50,8 @@ inline const char* DbErrorString(DbError code) {
       return "I/O error";
     case DbError::kBadState:
       return "bad state";
+    case DbError::kBufferFull:
+      return "buffer pool full";
     default:
       return "unknown error";
   }

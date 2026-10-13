@@ -40,6 +40,15 @@ add_executable(db_storage_test
   tests/db/storage_test.cpp
 )
 
+# Phase 2: BufferPool over PageStorage (Digvijay, Database Engine).
+add_executable(buffer_pool_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  tests/db/buffer_pool_test.cpp
+)
+
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME db_storage COMMAND db_storage_test)
+add_test(NAME buffer_pool COMMAND buffer_pool_test)
