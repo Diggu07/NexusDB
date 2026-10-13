@@ -1,332 +1,173 @@
 # NexusDB
 
-> An experimental OS-database integration system that explicitly connects container-level memory state with database buffer-pool management — built from scratch in C/C++ on Linux.
+> An experimental OS-database integration project exploring how container-level memory pressure can drive database buffer-pool management — built from scratch in C/C++ (Linux / WSL2 target).
 
 ![Language](https://img.shields.io/badge/language-C%2B%2B17%20%2F%20C11-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20WSL2-orange.svg)
-![Status](https://img.shields.io/badge/status-active-success.svg)
+![Status](https://img.shields.io/badge/status-under%20development-yellow.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Build](https://img.shields.io/badge/build-CMake-red.svg)
 
 ---
 
-## 📋 Table of Contents
+## Overview
 
-- [Overview](#-overview)
-- [Architecture](#-architecture)
-- [Features](#-features)
-- [Tech Stack](#-tech-stack)
-- [Project Structure](#-project-structure)
-- [Getting Started](#-getting-started)
-- [Usage](#-usage)
-- [Component Deep Dive](#-component-deep-dive)
-- [Benchmarking](#-benchmarking)
-- [Team](#-team)
-- [License](#-license)
+NexusDB is an educational systems programming project that aims to make the OS↔database feedback loop explicit and observable:
+
+> Container memory pressure → OS-DB Bridge → Buffer Pool adaptation → LRU eviction → measurable performance change → Dashboard
+
+The goal: when the Linux kernel reports that a containerized database process is approaching its cgroup memory limit, detect it, compute a new buffer-pool target, and shrink the pool (evicting pages) without crashing or restarting the database.
+
+**This is not a replacement for Docker or PostgreSQL.** It is a ground-up implementation built in phases.
 
 ---
 
-## 🔍 Overview
+## Project Status
 
-NexusDB is an **educational systems programming project** that bridges two traditionally separate concerns — container resource management and database engine internals. Most production databases treat OS-level memory constraints as external noise. NexusDB treats them as first-class signals.
+This project is developed in vertical slices. The table below separates what is
+actually in the tree from what is still being designed or built.
 
-The core idea:
+### Implemented
 
-> **Container memory pressure → OS-DB Bridge → Buffer Pool adaptation → LRU eviction → measurable performance change → Dashboard**
+- **Container foundation (C)** — an in-memory container registry (64 slots) and
+  lifecycle: `container_create` → `container_start` → `container_stop` →
+  `container_delete`, plus `container_status` / `container_get`, name/limit
+  validation, and a portable **placeholder** child process (Linux
+  `fork/exec/waitpid`; a Windows `ping` shim so the demo runs on dev machines
+  without WSL). No real OS isolation yet.
+- **Page storage (C++17)** — a fixed 4 KiB `Page` value type and a `PageStorage`
+  that maps dense pages onto a single database file: `AllocatePage`,
+  `ReadPage`, write-through `WritePage`, `NumPages`, `PageExists`, `Flush`,
+  `Close`. Opening never truncates an existing file. All fallible calls report
+  through a `Status` / `DbError` result layer (no exceptions across the API).
+- **Build & tests** — CMake (primary) and a root `Makefile` (parallel path)
+  build both the container lifecycle test and the page-storage test; the tests
+  are registered with CTest.
 
-When the Linux kernel reports that a containerized database process is approaching its cgroup memory limit, NexusDB's OS-DB Bridge detects this, computes a new target buffer pool size, and commands the DB engine to shrink — triggering LRU eviction and freeing memory headroom, all without crashing or restarting the database.
+### Under development (Database Engine — Digvijay)
 
-**This is not a replacement for Docker or PostgreSQL.** It is a ground-up implementation that makes the OS-database feedback loop explicit and observable.
+- Buffer pool + page frames
+- LRU eviction and dynamic buffer-pool resizing
+- CRUD operations and query processing
+
+### Planned
+
+- Write-ahead logging (WAL) and crash recovery
+- Runtime coordinator and CLI
+- Container namespaces and cgroups v2 isolation
+- OS-DB Bridge, adaptation policy, live dashboard, benchmarking suite
+
+> Everything under **Under development** and **Planned** is a design target.
+> It is **not** implemented on the current branch yet.
 
 ---
 
-## 🏗️ Architecture
+## Architecture (target design)
 
-NexusDB is organized into **4 layers**:
+NexusDB is planned as four layers. Only the container foundation and page
+storage exist so far.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│         Layer 1 — User Interface (CLI)          │
+│         Layer 1 — User Interface (CLI)          │  planned
 │         Commands / Query Input / Dashboard       │
 └────────────────────┬────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────┐
-│         Layer 2 — NexusDB Runtime               │
+│         Layer 2 — NexusDB Runtime               │  planned
 │   Runtime Coordinator · Container Engine        │
 │   DB Engine Implementation · OS-DB Bridge       │
 └──────┬─────────────────────────┬────────────────┘
        │                         │
 ┌──────▼──────┐         ┌────────▼───────────────┐
 │  Layer 3    │         │  NexusDB Container      │
-│  Container  │         │  DB Engine Instance     │
-│  (Isolated) │         │  Buffer Pool · WAL      │
+│  Container  │         │  DB Engine Instance     │  partly implemented
+│  (Isolated) │         │  Buffer Pool · WAL      │  (page storage only)
 └──────┬──────┘         └────────────────────────┘
        │
 ┌──────▼──────────────────────────────────────────┐
-│         Layer 4 — Linux Kernel                  │
+│         Layer 4 — Linux Kernel                  │  planned
 │   namespaces · cgroups v2 · process scheduler   │
 └─────────────────────────────────────────────────┘
 ```
 
-### Data Flow
+---
 
-```
-User → CLI → Runtime Coordinator → Container Engine → DB Engine Instance
-                                                            │
-                              cgroup metrics ← OS-DB Bridge ┘
-                                    │
-                              Adaptation Policy
-                                    │
-                         Buffer Pool target resize
-                                    │
-                              LRU Eviction → Memory freed
-                                    │
-                              Dashboard (live metrics)
-```
+## Tech Stack
+
+| Layer | Technology | Status |
+|-------|-----------|--------|
+| Database Engine | C++17 | page storage implemented |
+| Container Runtime | C11 | foundation implemented |
+| OS-DB Bridge | C++17 | planned |
+| Build System | CMake 3.16+ / Make | implemented |
+| Container isolation | namespaces, cgroups v2 | planned |
+| Dashboard | ncurses | planned |
+| Testing | hand-written C/C++ test programs via CTest | implemented |
 
 ---
 
-## ✨ Features
-
-- **Custom Container Runtime** — Creates isolated Linux containers using namespaces and cgroups v2 from scratch (no Docker dependency)
-- **Full Database Engine** — Page-based storage, CRUD operations, SQL query processing with lexer and parser
-- **Buffer Pool + LRU Eviction** — In-memory page cache with configurable size and LRU-based eviction
-- **Write-Ahead Logging (WAL)** — Crash-safe writes with a full recovery manager
-- **OS-DB Bridge** — Real-time cgroup memory monitoring with adaptive buffer pool resizing
-- **Dynamic Resource Adaptation** — Buffer pool shrinks/grows in response to live container memory pressure
-- **Live Dashboard** — ncurses-based terminal UI showing memory, CPU, cache hit ratio, and query latency
-- **Benchmarking Suite** — Controlled workloads under 512MB / 256MB / 128MB memory limits with comparative results
-
----
-
-## 🛠️ Tech Stack
-
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| Database Engine | C++17 | Performance, memory control, STL |
-| Container Runtime | C11 | Direct syscall access, minimal overhead |
-| OS-DB Bridge | C++17 | Interfaces with both C container layer and C++ DB layer |
-| Build System | CMake 3.20+ | Mixed C/C++ project, cross-component linking |
-| Linux Features | namespaces, cgroups v2 | Process isolation, resource enforcement |
-| Dashboard | ncurses | Lightweight terminal UI, no GUI dependency |
-| Testing | Google Test (C++) + Unity (C) | Separate test frameworks for each language |
-| Platform | Ubuntu 22.04 / WSL2 | cgroups v2 support required |
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 NexusDB/
-│
-├── include/                    ← All public headers (single source of truth)
-│   ├── common/                 ← Shared types, error codes, config
-│   ├── cli/                    ← CLI and command parser interfaces
-│   ├── runtime/                ← Runtime coordinator interface
-│   ├── db/                     ← All DB engine headers
-│   ├── container/              ← Container runtime headers
-│   └── bridge/                 ← OS-DB Bridge headers
-│
-├── src/                        ← Implementation only (no headers)
-│   ├── main/                   ← Entry point
-│   ├── cli/                    ← CLI + command parser
-│   ├── runtime/                ← Runtime coordinator
-│   ├── db/
-│   │   ├── engine/             ← DB engine core
-│   │   ├── manager/            ← Request routing
-│   │   ├── query/              ← Lexer, parser, query processor
-│   │   ├── storage/            ← Page + page storage
-│   │   ├── buffer/             ← Buffer pool + frames
-│   │   ├── cache/              ← LRU eviction
-│   │   ├── transaction/        ← Transaction management
-│   │   └── recovery/           ← WAL + crash recovery
-│   ├── container/              ← C: namespaces, cgroups, lifecycle
-│   └── bridge/                 ← OS-DB Bridge + adaptation policy
-│
+├── include/
+│   ├── common/                 ← shared config + DbError/Status     [implemented]
+│   ├── container/              ← container runtime public API       [implemented]
+│   └── db/                     ← Page, PageStorage                  [implemented]
+├── src/
+│   ├── container/              ← C: registry + lifecycle + process  [implemented]
+│   └── db/storage/             ← Page + PageStorage                 [implemented]
 ├── tests/
-│   ├── db/                     ← Unit tests for all DB components
-│   ├── container/              ← Unit tests for container runtime
-│   └── integration/            ← End-to-end system tests
-│
-├── scripts/
-│   ├── setup.sh                ← Environment setup
-│   ├── setup_cgroups.sh        ← cgroups v2 configuration
-│   ├── cleanup.sh              ← Teardown
-│   └── run_benchmark.sh        ← Benchmark runner
-│
-├── benchmarks/
-│   ├── workloads/              ← Benchmark workload definitions
-│   └── results/                ← Recorded benchmark output
-│
-├── docs/                       ← Component documentation
-├── data/                       ← Database files (runtime)
-├── logs/                       ← Log output (runtime)
-└── build/                      ← CMake build output
+│   ├── container/              ← container lifecycle test           [implemented]
+│   └── db/                     ← page storage test                  [implemented]
+├── docs/                       ← component documentation            [implemented]
+├── CMakeLists.txt              ← primary build                      [implemented]
+├── Makefile                    ← parallel build/test path            [implemented]
+└── (planned) src/db/{engine,buffer,cache,query,recovery}, src/cli,
+    src/runtime, src/bridge, src/main, scripts/, benchmarks/
 ```
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- **OS**: Ubuntu 22.04 or WSL2 (Windows 11) — cgroups v2 required
-- **Compiler**: GCC 11+ or Clang 14+ (C++17 support)
-- **CMake**: 3.20+
-- **Libraries**: ncurses, pthread
-- **Permissions**: sudo access (for namespace and cgroup setup)
+- **Compiler**: GCC 11+ or Clang 14+ (C++17 / C11)
+- **CMake**: 3.16+
+- **Make** (optional): a `Makefile` path is provided for convenience
 
-```bash
-# Verify cgroups v2
-mount | grep cgroup2
-# Should output: cgroup2 on /sys/fs/cgroup type cgroup2
-
-# Install dependencies
-sudo apt update
-sudo apt install -y build-essential cmake libncurses-dev
-```
+The Linux/WSL2 target is required for the planned namespace/cgroup work; the
+container foundation and page storage build and run on a Windows dev machine
+with MinGW as well.
 
 ### Build
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-team/nexusdb.git
-cd nexusdb
-
-# Setup environment (cgroups, directories)
-chmod +x scripts/*.sh
-sudo ./scripts/setup.sh
-sudo ./scripts/setup_cgroups.sh
-
-# Build
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+cmake -S . -B build
+cmake --build build
 ```
 
 ### Run Tests
 
 ```bash
-# From build directory
+ctest --test-dir build --output-on-failure
+```
+
+### Make alternative
+
+```bash
+make          # mingw32-make on Windows
 make test
-
-# Or run specific suite
-./tests/db/engine_test
-./tests/container/container_test
-./tests/integration/db_container_test
 ```
+
+There is no daemon, CLI, or database executable yet — only the test binaries
+built above.
 
 ---
 
-## 💻 Usage
-
-### Start NexusDB
-
-```bash
-# Launch the NexusDB runtime
-sudo ./build/nexusdb
-```
-
-### CLI Commands
-
-```bash
-# Container management
-nexus> create container --name mydb --memory 512MB --cpu 50%
-nexus> start container mydb
-nexus> stop container mydb
-nexus> status container mydb
-
-# Database queries (once container is running)
-nexus> query mydb "INSERT INTO users VALUES (1, 'Alice')"
-nexus> query mydb "SELECT * FROM users"
-nexus> query mydb "UPDATE users SET name='Bob' WHERE id=1"
-nexus> query mydb "DELETE FROM users WHERE id=1"
-
-# Monitoring
-nexus> dashboard          # Launch live ncurses dashboard
-nexus> metrics mydb       # Print current resource metrics
-```
-
-### Dashboard
-
-The live dashboard displays:
-
-| Metric | Description |
-|--------|-------------|
-| Memory Limit | cgroup memory.max |
-| Memory Usage | cgroup memory.current |
-| CPU Usage | % of allocated CPU |
-| Buffer Pool Size | Current target (pages) |
-| Cache Hit Ratio | Hits / (Hits + Misses) |
-| Query Latency | Average ms per query |
-
----
-
-## 🔬 Component Deep Dive
-
-### Database Engine (DB Engine)
-
-The query path follows:
-
-```
-SQL String → Lexer → Parser → Query Processor → Buffer Pool → Page Storage
-                                                      │
-                                                  WAL (writes)
-                                                      │
-                                               Recovery Manager
-```
-
-- **Page size**: 4 KB (configurable via `include/common/config.h`)
-- **Buffer pool**: fixed number of frames in RAM, backed by page storage on disk
-- **LRU**: evicts least-recently-used page frame when pool is full or target is reduced
-- **WAL**: every write is logged before being applied — enables crash recovery
-
-### Container Runtime
-
-Uses raw Linux syscalls (no libcontainer):
-
-```c
-// Namespace creation
-clone(child_fn, stack, CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET, args);
-
-// cgroup v2 memory limit
-write(fd, "536870912", len);  // 512MB to memory.max
-```
-
-### OS-DB Bridge — Adaptation Policy
-
-```
-Read memory.current and memory.max from cgroup fs
-    │
-    ▼
-pressure_ratio = memory.current / memory.max
-
-if pressure_ratio > 0.85:   → shrink buffer pool by 20%
-if pressure_ratio < 0.60:   → grow buffer pool by 10%
-else:                        → no action
-```
-
----
-
-## 📊 Benchmarking
-
-Run controlled experiments across three memory constraint levels:
-
-```bash
-sudo ./scripts/run_benchmark.sh
-```
-
-| Memory Limit | Expected Behavior |
-|-------------|-------------------|
-| 512 MB | Baseline — buffer pool operates near full capacity |
-| 256 MB | Moderate pressure — bridge triggers 1–2 shrink events |
-| 128 MB | High pressure — frequent eviction, measurable latency increase |
-
-Results are saved to `benchmarks/results/` with query latency, cache hit ratio, and buffer pool size over time.
-
----
-
-## 👥 Team
+## Team
 
 | Member | Role | Ownership |
 |--------|------|-----------|
@@ -334,44 +175,8 @@ Results are saved to `benchmarks/results/` with query latency, cache hit ratio, 
 | **Ayush Yadav** | Systems Engineer | Container Runtime · Linux Layer · namespaces · cgroups v2 · Process lifecycle |
 | **Md Abu Rehan** | Bridge & Observability | OS-DB Bridge · Monitoring · Dynamic Adaptation · Dashboard · Benchmarking |
 
-### End-to-End Ownership Flow
-
-```
-Container [Ayush] → DB Process [Digvijay] → RAM / Buffer Pool [Digvijay]
-      ↑                                              ↓
-cgroup metrics [Ayush] ← OS-DB Bridge [Rehan] ← memory pressure
-      └──────────────────────────────────────────────┘
-                    Dashboard [Rehan]
-```
-
 ---
 
-## 🎓 About This Project
-
-NexusDB was built as a final systems programming project to explore the intersection of **operating systems** and **database internals**. The central research question:
-
-> *Can container-level memory signals be used to drive real-time database buffer management — and can we observe the performance effects?*
-
-**Key concepts implemented from scratch:**
-- Linux process isolation (namespaces)
-- Resource enforcement (cgroups v2)
-- Page-based database storage
-- Buffer pool management with LRU eviction
-- Write-ahead logging and crash recovery
-- Cross-layer adaptive resource management
-
----
-
-## 📄 License
+## License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
-
----
-
-<div align="center">
-
-**NexusDB** — Where the OS meets the Database
-
-*Built with 🔧 by Digvijay, Ayush & Rehan*
-
-</div>

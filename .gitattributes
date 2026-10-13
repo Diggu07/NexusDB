@@ -1,0 +1,7 @@
+# Normalize line endings: store LF in the repository, check out the
+# platform-native form. Prevents CRLF churn between the Windows dev
+# machine and the real Linux/WSL2 target.
+* text=auto
+
+# Shell scripts must keep LF so they execute on Linux/WSL2.
+*.sh text eol=lf
