@@ -1,9 +1,14 @@
-// NexusDB — fixed-capacity page buffer pool (Digvijay: Database Engine, Phase 2).
+// NexusDB — resizable page buffer pool (Digvijay: Database Engine, Phase 2).
 //
-// The BufferPool caches a fixed number of Page objects in memory, called
-// frames, on top of a PageStorage. PageStorage stays the ONLY component that
-// touches the database file; the pool keeps hot pages resident and mediates
-// all reads and writes through it.
+// The BufferPool caches Page objects in memory, called frames, on top of a
+// PageStorage. PageStorage stays the ONLY component that touches the database
+// file; the pool keeps hot pages resident and mediates all reads and writes
+// through it.
+//
+// The pool is created with a capacity -- the maximum number of resident pages
+// -- and that capacity can be changed at runtime with Resize(). Frame objects
+// live in a std::deque so that growing the pool never moves existing frames:
+// Page references obtained from a live Handle stay valid across a Resize.
 //
 // Replacement is true LRU (least recently used). When the pool is full and a
 // non-resident page is requested, the least recently used UNPINNED frame is
@@ -50,8 +55,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
-#include <vector>
 
 #include "common/error.h"
 #include "db/page.h"
@@ -60,7 +65,7 @@ namespace nexusdb {
 
 class PageStorage;
 
-// A fixed-capacity cache of pages backed by PageStorage.
+// A resizable-capacity cache of pages backed by PageStorage.
 class BufferPool {
  public:
   // Sentinel frame index meaning "no frame".
@@ -141,7 +146,37 @@ class BufferPool {
   // failed stays dirty. kBadState when the pool has no storage.
   Status FlushAll();
 
-  // Configured frame capacity.
+  // Changes the maximum number of resident pages to `new_capacity`.
+  // `new_capacity` must be positive (as with Create). Resizing to the current
+  // capacity is a successful no-op: nothing is flushed, evicted, or has its
+  // recency stamp changed.
+  //
+  // Increase: existing resident pages, pin counts, Handles, dirty flags, and
+  //   relative LRU order are preserved and no page is flushed or evicted.
+  //   Frame storage is allocated up front, so an allocation failure is
+  //   reported here (kOutOfMemory) with the pool left unchanged.
+  //
+  // Decrease: the resident-page count is reduced to at most `new_capacity` by
+  //   evicting the least recently used UNPINNED pages. Each dirty victim is
+  //   written through PageStorage before it is removed. Pinned pages are never
+  //   evicted and no outstanding Handle is invalidated.
+  //
+  // Failure atomicity: a decrease is committed only after every selected
+  //   victim flushes successfully. If a victim's write fails, Resize returns
+  //   that error and the pool keeps its original capacity and resident-page
+  //   set; pages flushed before the failure are simply left clean (their bytes
+  //   are already durable) while the failing victim stays dirty. A shrink that
+  //   cannot reach the target because too many candidate frames are pinned
+  //   fails with kBufferFull before anything is flushed. No Handle, pin count,
+  //   dirty flag, or recency stamp is changed by a failed resize.
+  //
+  // Errors: kInvalidArgument (new_capacity == 0), kOutOfMemory (frame storage
+  //   for a larger capacity could not be allocated), kBufferFull (a shrink
+  //   cannot proceed because too many candidate frames are pinned), or a
+  //   Status propagated from PageStorage::WritePage.
+  Status Resize(std::size_t new_capacity);
+
+  // Current maximum number of resident pages.
   std::size_t capacity() const { return capacity_; }
 
   // Number of currently resident pages.
@@ -169,17 +204,22 @@ class BufferPool {
   // Index of the resident frame holding `id`, or kNoFrame.
   std::size_t FindFrame(Page::PageId id) const;
 
-  // Chooses a frame to hold a page being loaded: a free frame if one exists,
-  // otherwise the least recently used UNPINNED frame (flushing it first if
-  // dirty). Recency is read from Frame::last_used. Writes the chosen index to
-  // `*out`. Fails with kBufferFull when every frame is pinned, or with the
-  // flush error when a dirty victim could not be written (the victim is then
-  // left intact so no data is lost).
+  // Chooses a frame to hold a page being loaded. While the resident-page count
+  // is below the logical capacity a free frame is used; only when the pool is
+  // at capacity is the least recently used UNPINNED frame evicted (flushing it
+  // first if dirty). Recency is read from Frame::last_used. Writes the chosen
+  // index to `*out`. Fails with kBufferFull when every frame is pinned, or with
+  // the flush error when a dirty victim could not be written (the victim is
+  // then left intact so no data is lost).
   Status AcquireFrame(std::size_t* out);
 
   // Flushes frame `frame` if it is resident and dirty; clears the dirty flag
   // on success, keeps it on failure.
   Status FlushFrame(std::size_t frame);
+
+  // Releases trailing free frames, but never below the logical capacity, so
+  // the invariant `frames_.size() >= capacity_` always holds.
+  void TrimFreeFrames();
 
   void UnpinFrame(std::size_t frame);
 
@@ -192,8 +232,11 @@ class BufferPool {
   void RenumberClock();
 
   PageStorage* storage_;
-  std::size_t capacity_;
-  std::vector<Frame> frames_;
+  std::size_t capacity_;  // logical maximum resident pages
+  // Physical frame slots. `frames_.size() >= capacity_` always holds; free
+  // slots may exist beyond the logical capacity after a shrink. A deque keeps
+  // existing frames (and any Handle::page() reference) valid when it grows.
+  std::deque<Frame> frames_;
   std::uint64_t access_clock_ = 0;
 };
 

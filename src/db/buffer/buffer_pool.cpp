@@ -1,18 +1,27 @@
-// NexusDB — fixed-capacity page buffer pool implementation (Phase 2).
+// NexusDB — resizable page buffer pool implementation (Phase 2).
 //
-// Replacement is true LRU: a free frame is used first; otherwise the least
-// recently used UNPINNED frame is reused, and a dirty victim is written back
-// before reuse so no committed modification is lost. Recency is a per-frame
-// monotonic access-clock stamp updated on every successful Fetch (hit or
-// load). A resident page is always served from memory; a missing page is read
-// through PageStorage exactly once.
+// Replacement is true LRU: a free frame is used first while the pool is below
+// its logical capacity; otherwise the least recently used UNPINNED frame is
+// reused, and a dirty victim is written back before reuse so no committed
+// modification is lost. Recency is a per-frame monotonic access-clock stamp
+// updated on every successful Fetch (hit or load). A resident page is always
+// served from memory; a missing page is read through PageStorage exactly once.
+//
+// Frames live in a std::deque. Growing the pool therefore never moves existing
+// frames, so Page references held through a live Handle stay valid across a
+// Resize. capacity_ is the logical maximum resident-page count and may be less
+// than frames_.size(): a shrink frees trailing frames but never relocates the
+// survivors (which would invalidate index-based Handles).
 
 #include "db/buffer_pool.h"
 
 #include <algorithm>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "db/page_storage.h"
 
@@ -47,7 +56,7 @@ Status BufferPool::Create(PageStorage* storage,
 }
 
 std::size_t BufferPool::FindFrame(Page::PageId id) const {
-  for (std::size_t i = 0; i < capacity_; ++i) {
+  for (std::size_t i = 0; i < frames_.size(); ++i) {
     if (frames_[i].in_use && frames_[i].page.id() == id) {
       return i;
     }
@@ -66,8 +75,8 @@ void BufferPool::RenumberClock() {
   // Compact the in-use frames' stamps to 1..n in recency order. Free frames
   // are ignored: their stale stamps are overwritten when next installed.
   std::vector<std::size_t> order;
-  order.reserve(capacity_);
-  for (std::size_t i = 0; i < capacity_; ++i) {
+  order.reserve(frames_.size());
+  for (std::size_t i = 0; i < frames_.size(); ++i) {
     if (frames_[i].in_use) {
       order.push_back(i);
     }
@@ -83,18 +92,22 @@ void BufferPool::RenumberClock() {
 }
 
 Status BufferPool::AcquireFrame(std::size_t* out) {
-  // Prefer a never-used frame; nothing needs evicting.
-  for (std::size_t i = 0; i < capacity_; ++i) {
-    if (!frames_[i].in_use) {
-      *out = i;
-      return Status::Ok();
+  // While below the logical capacity, prefer a free frame; nothing needs
+  // evicting. The invariant frames_.size() >= capacity_ guarantees a free slot
+  // exists here.
+  if (size() < capacity_) {
+    for (std::size_t i = 0; i < frames_.size(); ++i) {
+      if (!frames_[i].in_use) {
+        *out = i;
+        return Status::Ok();
+      }
     }
   }
-  // Otherwise evict the least recently used unpinned frame. Strict '<' keeps
-  // the lowest-indexed frame on a tie, so the choice stays deterministic.
+  // At capacity: evict the least recently used unpinned frame. Strict '<'
+  // keeps the lowest-indexed frame on a tie, so the choice stays deterministic.
   std::size_t victim = kNoFrame;
   std::uint64_t oldest = std::numeric_limits<std::uint64_t>::max();
-  for (std::size_t i = 0; i < capacity_; ++i) {
+  for (std::size_t i = 0; i < frames_.size(); ++i) {
     const Frame& f = frames_[i];
     if (f.in_use && f.pin_count == 0 && f.last_used < oldest) {
       oldest = f.last_used;
@@ -111,6 +124,95 @@ Status BufferPool::AcquireFrame(std::size_t* out) {
   }
   *out = victim;
   return Status::Ok();
+}
+
+void BufferPool::TrimFreeFrames() {
+  while (frames_.size() > capacity_ && !frames_.back().in_use) {
+    frames_.pop_back();
+  }
+}
+
+Status BufferPool::Resize(std::size_t new_capacity) {
+  if (new_capacity == 0) {
+    return Status::Error(DbError::kInvalidArgument,
+                         "buffer pool capacity must be positive");
+  }
+  if (new_capacity == capacity_) {
+    return Status::Ok();  // documented no-op
+  }
+
+  // The only allocations are frame storage for growth and the small temporary
+  // vector used to rank shrink victims; both are reported as kOutOfMemory.
+  try {
+    if (new_capacity > capacity_) {
+      // Grow. Allocate up front so allocation failure surfaces here rather
+      // than at a later Fetch. Existing frames -- and therefore resident
+      // pages, pins, dirty flags, and recency -- are preserved untouched.
+      if (new_capacity > frames_.size()) {
+        frames_.resize(new_capacity);
+      }
+      capacity_ = new_capacity;
+      return Status::Ok();
+    }
+
+    // Shrink. Reduce the resident-page count to at most new_capacity by
+    // evicting the LRU UNPINNED pages.
+    const std::size_t residents = size();
+    std::vector<std::size_t> victims;
+    if (residents > new_capacity) {
+      const std::size_t needed = residents - new_capacity;
+
+      // Gather candidate victims (resident and unpinned) and check, before
+      // changing anything, that enough of them exist.
+      victims.reserve(needed);
+      for (std::size_t i = 0; i < frames_.size(); ++i) {
+        if (frames_[i].in_use && frames_[i].pin_count == 0) {
+          victims.push_back(i);
+        }
+      }
+      if (victims.size() < needed) {
+        return Status::Error(
+            DbError::kBufferFull,
+            "cannot shrink: not enough unpinned frames to evict");
+      }
+
+      // Rank LRU first (ties by index) and keep only as many as needed.
+      // Inspection reads last_used only, so it never promotes a page.
+      std::sort(victims.begin(), victims.end(),
+                [this](std::size_t a, std::size_t b) {
+                  if (frames_[a].last_used != frames_[b].last_used) {
+                    return frames_[a].last_used < frames_[b].last_used;
+                  }
+                  return a < b;
+                });
+      victims.resize(needed);
+    }
+
+    // Write back dirty victims before touching any metadata. A failure aborts
+    // the resize: capacity, resident pages, pins, and recency stay unchanged;
+    // victims flushed before the failure are simply left clean, and the failing
+    // victim stays dirty.
+    for (std::size_t frame : victims) {
+      Status s = FlushFrame(frame);
+      if (!s.ok()) {
+        return s;
+      }
+    }
+
+    // Commit. Every victim is now clean, so releasing its slot cannot fail.
+    for (std::size_t frame : victims) {
+      frames_[frame] = Frame();
+    }
+    capacity_ = new_capacity;
+    TrimFreeFrames();
+    return Status::Ok();
+  } catch (const std::bad_alloc&) {
+    return Status::Error(DbError::kOutOfMemory,
+                         "cannot allocate frame storage for resize");
+  } catch (const std::length_error&) {
+    return Status::Error(DbError::kOutOfMemory,
+                         "requested buffer pool capacity is too large");
+  }
 }
 
 Status BufferPool::Fetch(Page::PageId id, Handle* out) {
@@ -186,7 +288,7 @@ Status BufferPool::FlushAll() {
     return Status::Error(DbError::kBadState, "buffer pool has no storage");
   }
   Status first_error = Status::Ok();
-  for (std::size_t i = 0; i < capacity_; ++i) {
+  for (std::size_t i = 0; i < frames_.size(); ++i) {
     if (!frames_[i].in_use || !frames_[i].page.IsDirty()) {
       continue;
     }
@@ -200,7 +302,7 @@ Status BufferPool::FlushAll() {
 
 std::size_t BufferPool::size() const {
   std::size_t count = 0;
-  for (std::size_t i = 0; i < capacity_; ++i) {
+  for (std::size_t i = 0; i < frames_.size(); ++i) {
     if (frames_[i].in_use) {
       ++count;
     }
@@ -210,7 +312,7 @@ std::size_t BufferPool::size() const {
 
 std::size_t BufferPool::pinned_frames() const {
   std::size_t count = 0;
-  for (std::size_t i = 0; i < capacity_; ++i) {
+  for (std::size_t i = 0; i < frames_.size(); ++i) {
     if (frames_[i].in_use && frames_[i].pin_count > 0) {
       ++count;
     }
@@ -228,7 +330,7 @@ std::size_t BufferPool::PinCount(Page::PageId id) const {
 }
 
 void BufferPool::UnpinFrame(std::size_t frame) {
-  if (frame >= capacity_) {
+  if (frame >= frames_.size()) {
     return;
   }
   Frame& f = frames_[frame];

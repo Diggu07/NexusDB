@@ -1,11 +1,13 @@
 // NexusDB — Phase 2 buffer-pool test.
 //
-// Exercises the fixed-capacity BufferPool against a real PageStorage file:
+// Exercises the resizable BufferPool against a real PageStorage file:
 // initialization, cache hits, pin/unpin accounting, dirty tracking, flush,
 // persistence across a storage reopen, LRU eviction (recency on hits, pinned
 // victims skipped, dirty victims written back, failed fetches not disturbing
-// state), the all-pinned error, invalid ids/handles, storage-error propagation,
-// and clean shutdown.
+// state), runtime capacity resizing (grow, shrink, LRU victims, pinned-page
+// and dirty-write failures, invalid requests, repeated resizing, and handle
+// lifecycle across resizes), the all-pinned error, invalid ids/handles,
+// storage-error propagation, and clean shutdown.
 //
 // Same plain PASS/FAIL style as the other DB tests: every check goes through
 // a real database file in the OS temp directory, removed before and after.
@@ -16,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -713,6 +716,463 @@ int main() {
           still0.IsDirty());
     CHECK("LRU failure state: data preserved by the failed miss",
           MatchesPattern(still0.page(), 0x33));
+  }
+  RemoveDb(path);
+
+  // ---- 20. Resize: increasing capacity preserves residents and pins ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize grow: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("resize grow: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize grow: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+
+    BufferPool::Handle a;
+    CHECK("resize grow: fetch 0 and pin", pool->Fetch(0, &a).ok());
+    BufferPool::Handle b;
+    CHECK("resize grow: fetch 1 and pin", pool->Fetch(1, &b).ok());
+    CHECK("resize grow: initial capacity", pool->capacity() == 2);
+    CHECK("resize grow: full before growth", pool->size() == 2);
+
+    CHECK("resize grow: increase to 4 succeeds", pool->Resize(4).ok());
+    CHECK("resize grow: capacity is 4", pool->capacity() == 4);
+    CHECK("resize grow: residents preserved", pool->size() == 2);
+    CHECK("resize grow: page 0 still resident", pool->Contains(0));
+    CHECK("resize grow: page 1 still resident", pool->Contains(1));
+    CHECK("resize grow: pin on page 0 preserved", pool->PinCount(0) == 1);
+    CHECK("resize grow: pin on page 1 preserved", pool->PinCount(1) == 1);
+    CHECK("resize grow: handle a still valid", a.valid() && a.id() == 0);
+    CHECK("resize grow: handle b still valid", b.valid() && b.id() == 1);
+    CHECK("resize grow: pins unchanged", pool->pinned_frames() == 2);
+  }
+  RemoveDb(path);
+
+  // ---- 21. Resize: load more pages after expansion without eviction ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize expand-load: open storage",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 6; ++i) {
+      Page p;
+      CHECK("resize expand-load: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize expand-load: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("resize expand-load: fetch 0", pool->Fetch(0, &h0).ok());
+      BufferPool::Handle h1;
+      CHECK("resize expand-load: fetch 1", pool->Fetch(1, &h1).ok());
+    }
+    CHECK("resize expand-load: increase to 4 succeeds", pool->Resize(4).ok());
+    {
+      BufferPool::Handle h2;
+      CHECK("resize expand-load: fetch 2", pool->Fetch(2, &h2).ok());
+      BufferPool::Handle h3;
+      CHECK("resize expand-load: fetch 3", pool->Fetch(3, &h3).ok());
+    }
+    CHECK("resize expand-load: four pages resident", pool->size() == 4);
+    CHECK("resize expand-load: pages 0-3 all resident",
+          pool->Contains(0) && pool->Contains(1) && pool->Contains(2) &&
+              pool->Contains(3));
+  }
+  RemoveDb(path);
+
+  // ---- 22. Resize: shrinking an underutilized pool keeps its residents ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize under: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 4; ++i) {
+      Page p;
+      CHECK("resize under: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize under: create pool",
+          BufferPool::Create(storage.get(), 4, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("resize under: fetch 0", pool->Fetch(0, &h0).ok());
+    }
+    CHECK("resize under: one resident page", pool->size() == 1);
+
+    CHECK("resize under: shrink to 2 succeeds", pool->Resize(2).ok());
+    CHECK("resize under: capacity is 2", pool->capacity() == 2);
+    CHECK("resize under: resident page intact", pool->Contains(0));
+    CHECK("resize under: size intact", pool->size() == 1);
+  }
+  RemoveDb(path);
+
+  // ---- 23. Resize: shrinking a full pool evicts the LRU pages ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize lru: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 4; ++i) {
+      Page p;
+      CHECK("resize lru: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize lru: create pool",
+          BufferPool::Create(storage.get(), 4, &pool).ok());
+    {
+      BufferPool::Handle h;
+      CHECK("resize lru: fetch 0", pool->Fetch(0, &h).ok());
+    }
+    {
+      BufferPool::Handle h;
+      CHECK("resize lru: fetch 1", pool->Fetch(1, &h).ok());
+    }
+    {
+      BufferPool::Handle h;
+      CHECK("resize lru: fetch 2", pool->Fetch(2, &h).ok());
+    }
+    {
+      BufferPool::Handle h;
+      CHECK("resize lru: fetch 3", pool->Fetch(3, &h).ok());
+    }
+    {
+      BufferPool::Handle h;
+      CHECK("resize lru: re-fetch 0 to promote it", pool->Fetch(0, &h).ok());
+    }
+    // Recency (oldest first): 1, 2, 3, 0. Shrinking to 2 must evict 1 and 2.
+    CHECK("resize lru: shrink to 2 succeeds", pool->Resize(2).ok());
+    CHECK("resize lru: capacity is 2", pool->capacity() == 2);
+    CHECK("resize lru: size is 2", pool->size() == 2);
+    CHECK("resize lru: most recently used pages survive",
+          pool->Contains(0) && pool->Contains(3));
+    CHECK("resize lru: least recently used pages evicted",
+          !pool->Contains(1) && !pool->Contains(2));
+  }
+  RemoveDb(path);
+
+  // ---- 24. Resize: shrink fails safely when too many pages are pinned ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize pinned: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("resize pinned: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize pinned: create pool",
+          BufferPool::Create(storage.get(), 3, &pool).ok());
+    BufferPool::Handle p0;
+    CHECK("resize pinned: fetch 0 and pin", pool->Fetch(0, &p0).ok());
+    BufferPool::Handle p1;
+    CHECK("resize pinned: fetch 1 and pin", pool->Fetch(1, &p1).ok());
+    {
+      BufferPool::Handle h2;
+      CHECK("resize pinned: fetch 2 (left unpinned)", pool->Fetch(2, &h2).ok());
+    }
+
+    const Status s = pool->Resize(1);  // needs 2 victims, but only page 2 can go
+    CHECK("resize pinned: shrink fails", !s.ok());
+    CHECK("resize pinned: reports kBufferFull", s.code == DbError::kBufferFull);
+    CHECK("resize pinned: capacity unchanged", pool->capacity() == 3);
+    CHECK("resize pinned: all pages still resident",
+          pool->Contains(0) && pool->Contains(1) && pool->Contains(2));
+    CHECK("resize pinned: size unchanged", pool->size() == 3);
+    CHECK("resize pinned: pins on 0 and 1 unchanged",
+          pool->PinCount(0) == 1 && pool->PinCount(1) == 1);
+    CHECK("resize pinned: handles still valid",
+          p0.valid() && p0.id() == 0 && p1.valid() && p1.id() == 1);
+  }
+  RemoveDb(path);
+
+  // ---- 25. Resize: dirty LRU victims are written back before eviction ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize dirty: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("resize dirty: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize dirty: create pool",
+          BufferPool::Create(storage.get(), 3, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("resize dirty: fetch 0", pool->Fetch(0, &h0).ok());
+      FillPattern(&h0.page(), 0x11);
+    }
+    {
+      BufferPool::Handle h1;
+      CHECK("resize dirty: fetch 1", pool->Fetch(1, &h1).ok());
+      FillPattern(&h1.page(), 0x22);
+    }
+    {
+      BufferPool::Handle h2;
+      CHECK("resize dirty: fetch 2", pool->Fetch(2, &h2).ok());
+    }
+
+    // Recency (oldest first): 0, 1, 2. Shrinking to 1 evicts dirty 0 and 1.
+    CHECK("resize dirty: shrink to 1 succeeds", pool->Resize(1).ok());
+    CHECK("resize dirty: capacity is 1", pool->capacity() == 1);
+    CHECK("resize dirty: only most recent page resident",
+          pool->Contains(2) && !pool->Contains(0) && !pool->Contains(1));
+
+    Page p0;
+    CHECK("resize dirty: evicted page 0 readable",
+          storage->ReadPage(0, &p0).ok());
+    CHECK("resize dirty: page 0 bytes persisted", MatchesPattern(p0, 0x11));
+    Page p1;
+    CHECK("resize dirty: evicted page 1 readable",
+          storage->ReadPage(1, &p1).ok());
+    CHECK("resize dirty: page 1 bytes persisted", MatchesPattern(p1, 0x22));
+  }
+  RemoveDb(path);
+
+  // ---- 26. Resize: a dirty-victim write failure aborts the shrink ----
+  //
+  // PageStorage exposes no fault-injection seam, but closing it makes
+  // WritePage fail deterministically while the pool's metadata stays readable
+  // (the same closed-storage technique section 12 uses). A shrink that must
+  // write a dirty victim therefore fails without changing capacity, residency,
+  // or the victim's dirty state.
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize write-fail: open storage",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 2; ++i) {
+      Page p;
+      CHECK("resize write-fail: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize write-fail: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("resize write-fail: fetch 0", pool->Fetch(0, &h0).ok());
+      FillPattern(&h0.page(), 0x33);  // dirty, and least recently used
+    }
+    {
+      BufferPool::Handle h1;
+      CHECK("resize write-fail: fetch 1", pool->Fetch(1, &h1).ok());
+    }
+
+    CHECK("resize write-fail: close storage", storage->Close().ok());
+    const Status s = pool->Resize(1);  // victim page 0 is dirty -> write fails
+    CHECK("resize write-fail: shrink fails", !s.ok());
+    CHECK("resize write-fail: reports kBadState", s.code == DbError::kBadState);
+    CHECK("resize write-fail: capacity unchanged", pool->capacity() == 2);
+    CHECK("resize write-fail: residents unchanged",
+          pool->size() == 2 && pool->Contains(0) && pool->Contains(1));
+
+    BufferPool::Handle still0;
+    CHECK("resize write-fail: victim still resident (cache hit)",
+          pool->Fetch(0, &still0).ok());
+    CHECK("resize write-fail: victim still dirty", still0.IsDirty());
+    CHECK("resize write-fail: victim data intact",
+          MatchesPattern(still0.page(), 0x33));
+  }
+  RemoveDb(path);
+
+  // A shrink whose victims are all clean needs no I/O, so it still succeeds
+  // even after the storage has been closed.
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize clean-offline: open storage",
+          PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 2; ++i) {
+      Page p;
+      CHECK("resize clean-offline: allocate page",
+            storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize clean-offline: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("resize clean-offline: fetch 0", pool->Fetch(0, &h0).ok());
+    }
+    {
+      BufferPool::Handle h1;
+      CHECK("resize clean-offline: fetch 1", pool->Fetch(1, &h1).ok());
+    }
+
+    CHECK("resize clean-offline: close storage", storage->Close().ok());
+    CHECK("resize clean-offline: clean shrink succeeds", pool->Resize(1).ok());
+    CHECK("resize clean-offline: capacity is 1", pool->capacity() == 1);
+    CHECK("resize clean-offline: LRU clean page evicted", !pool->Contains(0));
+    CHECK("resize clean-offline: most recent page retained",
+          pool->Contains(1));
+  }
+  RemoveDb(path);
+
+  // ---- 27. Resize: invalid requests leave the pool unchanged ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize invalid: open storage", PageStorage::Open(path, &storage).ok());
+    Page seeded;
+    CHECK("resize invalid: allocate page", storage->AllocatePage(&seeded).ok());
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize invalid: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("resize invalid: fetch 0", pool->Fetch(0, &h0).ok());
+    }
+
+    const Status z = pool->Resize(0);
+    CHECK("resize invalid: zero capacity rejected", !z.ok());
+    CHECK("resize invalid: zero is kInvalidArgument",
+          z.code == DbError::kInvalidArgument);
+    CHECK("resize invalid: zero left pool unchanged",
+          pool->capacity() == 2 && pool->Contains(0) && pool->size() == 1);
+
+    const Status huge = pool->Resize(std::numeric_limits<std::size_t>::max());
+    CHECK("resize invalid: absurd capacity rejected", !huge.ok());
+    CHECK("resize invalid: absurd is kOutOfMemory",
+          huge.code == DbError::kOutOfMemory);
+    CHECK("resize invalid: absurd left pool unchanged",
+          pool->capacity() == 2 && pool->Contains(0) && pool->size() == 1);
+  }
+  RemoveDb(path);
+
+  // ---- 28. Resize: repeated grow/shrink stays consistent ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize repeat: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 6; ++i) {
+      Page p;
+      CHECK("resize repeat: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize repeat: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+
+    CHECK("resize repeat: grow to 4",
+          pool->Resize(4).ok() && pool->capacity() == 4);
+    for (int i = 0; i < 4; ++i) {
+      BufferPool::Handle h;
+      CHECK("resize repeat: load page",
+            pool->Fetch(static_cast<Page::PageId>(i), &h).ok());
+    }
+    CHECK("resize repeat: four resident", pool->size() == 4);
+
+    CHECK("resize repeat: grow to 6",
+          pool->Resize(6).ok() && pool->capacity() == 6);
+    {
+      BufferPool::Handle h4;
+      CHECK("resize repeat: load page 4", pool->Fetch(4, &h4).ok());
+      BufferPool::Handle h5;
+      CHECK("resize repeat: load page 5", pool->Fetch(5, &h5).ok());
+    }
+    CHECK("resize repeat: six resident", pool->size() == 6);
+
+    // Recency (oldest first): 0,1,2,3,4,5. Shrinking to 3 evicts 0,1,2.
+    CHECK("resize repeat: shrink to 3",
+          pool->Resize(3).ok() && pool->capacity() == 3);
+    CHECK("resize repeat: size clamped to 3", pool->size() == 3);
+    CHECK("resize repeat: most recent three survive",
+          pool->Contains(3) && pool->Contains(4) && pool->Contains(5));
+    CHECK("resize repeat: least recent three evicted",
+          !pool->Contains(0) && !pool->Contains(1) && !pool->Contains(2));
+
+    CHECK("resize repeat: grow again to 5",
+          pool->Resize(5).ok() && pool->capacity() == 5);
+    {
+      BufferPool::Handle h0;
+      CHECK("resize repeat: refetch 0 fits without eviction",
+            pool->Fetch(0, &h0).ok());
+    }
+    CHECK("resize repeat: four resident after refetch", pool->size() == 4);
+    CHECK("resize repeat: all four present",
+          pool->Contains(0) && pool->Contains(3) && pool->Contains(4) &&
+              pool->Contains(5));
+    CHECK("resize repeat: capacity still 5", pool->capacity() == 5);
+  }
+  RemoveDb(path);
+
+  // ---- 29. Resize: same-capacity resize is a no-op ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize noop: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 2; ++i) {
+      Page p;
+      CHECK("resize noop: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize noop: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+    {
+      BufferPool::Handle h0;
+      CHECK("resize noop: fetch 0", pool->Fetch(0, &h0).ok());
+      FillPattern(&h0.page(), 0x44);  // dirty
+    }
+    {
+      BufferPool::Handle h1;
+      CHECK("resize noop: fetch 1", pool->Fetch(1, &h1).ok());
+    }
+
+    CHECK("resize noop: resize to same capacity succeeds", pool->Resize(2).ok());
+    CHECK("resize noop: capacity unchanged", pool->capacity() == 2);
+    CHECK("resize noop: residents unchanged",
+          pool->size() == 2 && pool->Contains(0) && pool->Contains(1));
+
+    BufferPool::Handle h0;
+    CHECK("resize noop: no flush happened (page 0 still dirty)",
+          pool->Fetch(0, &h0).ok() && h0.IsDirty());
+  }
+  RemoveDb(path);
+
+  // ---- 30. Resize: handle lifecycle stays valid across grow and shrink ----
+  {
+    std::unique_ptr<PageStorage> storage;
+    CHECK("resize handle: open storage", PageStorage::Open(path, &storage).ok());
+    for (int i = 0; i < 3; ++i) {
+      Page p;
+      CHECK("resize handle: allocate page", storage->AllocatePage(&p).ok());
+    }
+
+    std::unique_ptr<BufferPool> pool;
+    CHECK("resize handle: create pool",
+          BufferPool::Create(storage.get(), 2, &pool).ok());
+
+    BufferPool::Handle a;
+    CHECK("resize handle: fetch 0", pool->Fetch(0, &a).ok());
+    BufferPool::Handle b(std::move(a));
+    CHECK("resize handle: move-construct relocates the pin",
+          b.valid() && !a.valid() && pool->PinCount(0) == 1);
+
+    CHECK("resize handle: grow to 4 succeeds", pool->Resize(4).ok());
+    CHECK("resize handle: handle valid after grow", b.valid() && b.id() == 0);
+    CHECK("resize handle: pin intact after grow", pool->PinCount(0) == 1);
+
+    BufferPool::Handle c;
+    CHECK("resize handle: fetch 1 into c", pool->Fetch(1, &c).ok());
+    CHECK("resize handle: two pins held",
+          pool->PinCount(0) == 1 && pool->PinCount(1) == 1);
+    c = std::move(b);
+    CHECK("resize handle: move-assign transfers the pin",
+          c.valid() && !b.valid() && c.id() == 0);
+    CHECK("resize handle: move-assign released the target's old pin",
+          pool->PinCount(1) == 0 && pool->PinCount(0) == 1);
+
+    // Page 0 is pinned by c, so a shrink to 1 evicts the unpinned page 1.
+    CHECK("resize handle: shrink to 1 succeeds", pool->Resize(1).ok());
+    CHECK("resize handle: pinned page retained", pool->Contains(0));
+    CHECK("resize handle: unpinned page evicted", !pool->Contains(1));
+    CHECK("resize handle: handle c still valid after shrink",
+          c.valid() && c.id() == 0 && pool->PinCount(0) == 1);
+
+    CHECK("resize handle: unpin c", c.Unpin().ok());
+    CHECK("resize handle: pin count cleared", pool->PinCount(0) == 0);
   }
   RemoveDb(path);
 

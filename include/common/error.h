@@ -19,6 +19,7 @@ enum class DbError {
   kIoError,          // open/seek/read/write/flush failure, short I/O
   kBadState,         // storage closed or never successfully opened
   kBufferFull,       // buffer pool has no free or unpinned frame for the page
+  kOutOfMemory,      // could not allocate frame storage for a larger pool
 };
 
 // Lightweight result type returned by fallible DB operations.
@@ -52,6 +53,8 @@ inline const char* DbErrorString(DbError code) {
       return "bad state";
     case DbError::kBufferFull:
       return "buffer pool full";
+    case DbError::kOutOfMemory:
+      return "out of memory";
     default:
       return "unknown error";
   }
