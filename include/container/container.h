@@ -8,12 +8,16 @@
  *   - Lifecycle: create -> start -> stop -> delete.
  *   - A portable placeholder child process stands in for the DB engine
  *     until Digvijay's DB executable is ready (see src/container/process.c).
+ *   - cgroups v2 provisioning is wired into the lifecycle: create writes
+ *     memory.max/cpu.max, start attaches the child, delete destroys the
+ *     cgroup. On the Windows dev shim this is a %TEMP% directory with mock
+ *     telemetry files; only Linux exercises real kernel enforcement.
  *
  * EXPLICITLY OUT OF SCOPE here (later phases):
- *   - Linux namespaces (Phase 3), cgroups v2 (Phase 4), real cgroup paths
- *     are only *recorded* as strings, never created here.
+ *   - Linux namespaces: implemented in src/container/namespace.c but NOT
+ *     enforced -- the lifecycle does not yet call namespace_apply().
  *   - OS-DB Bridge / adaptation policy (Rehan). This engine only *reports*
- *     state; it never resizes buffer pools or interprets memory pressure.
+ *     state and metrics; it never resizes buffer pools or interprets pressure.
  *   - Database internals (Digvijay): SQL, pages, buffer pool, LRU, WAL.
  *
  * PORTABILITY:
@@ -62,8 +66,10 @@ typedef enum nexus_rc {
  *
  * Limits: memory_bytes == 0 means "no limit configured yet";
  * cpu_percent == 0 means "no limit configured yet", else 1..100.
- * cgroup_path is the *intended* v2 path (e.g. /sys/fs/cgroup/nexusdb/<name>);
- * it is NOT created until the cgroups phase.
+ * cgroup_path is the provisioned v2 path: /sys/fs/cgroup/nexusdb/<name> on
+ * Linux, or a %TEMP% shim directory on Windows. container_create creates it
+ * (and writes the limits), container_start attaches the child, and
+ * container_delete removes it.
  */
 typedef struct nexus_container {
     char name[NEXUS_NAME_MAX];
@@ -72,7 +78,7 @@ typedef struct nexus_container {
     long pid;                          /* child PID, -1 if none */
     unsigned long memory_bytes;        /* 0 = unlimited/unset */
     unsigned int cpu_percent;          /* 0 = unset, else 1..100 */
-    char cgroup_path[NEXUS_PATH_MAX];  /* recorded only, not created */
+    char cgroup_path[NEXUS_PATH_MAX];  /* provisioned on create, removed on delete */
     char db_engine[NEXUS_PATH_MAX];    /* configured executable, may be "" */
     long created_at;                   /* time() at create, 0 if unknown */
 } nexus_container_t;
@@ -84,8 +90,9 @@ int container_create(const char *name,
                      unsigned int cpu_percent,
                      const char *db_engine);
 
-/* Start the container: spawns the placeholder child (later: the DB engine
- * inside namespaces+cgroup) and moves CREATED/STOPPED -> RUNNING. */
+/* Start the container: spawns the placeholder child and attaches it to the
+ * container's cgroup (later: launch the DB engine), moving CREATED/STOPPED
+ * -> RUNNING. Namespaces are not yet applied here. */
 int container_start(const char *name);
 
 /* Stop a RUNNING container: SIGTERM, grace period, SIGKILL, reap
@@ -100,8 +107,13 @@ int container_delete(const char *name);
  * terminated). Works for DELETED tombstones too. */
 int container_status(const char *name, char *buf, size_t buflen);
 
+#include "container/cgroup.h"
+
 /* Read-only lookup; NULL if the name was never created. */
 const nexus_container_t *container_get(const char *name);
+
+/* Query real-time resource metrics (memory usage, limit, CPU, pressure) from container's cgroup. */
+int container_metrics(const char *name, nexus_cgroup_metrics_t *metrics);
 
 /* Helpers. */
 const char *container_state_str(nexus_state_t state);

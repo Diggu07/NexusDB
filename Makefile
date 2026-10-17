@@ -2,8 +2,11 @@
 #
 # Targets:
 #   make            build all test binaries + the container demo
-#   make test       build + run all tests (container + db storage + demo)
+#   make test       build + run all tests (container + cgroup + db storage + buffer pool + demo)
 #   make clean      remove build artefacts
+#
+# Note: the DB engine demos (buffer_pool_demo, nexusdb_engine_demo) are built
+# and run by the CMake path only; this Makefile runs the container demo.
 #
 # Linux (Ubuntu/WSL2, the real target):
 #   make test
@@ -35,19 +38,32 @@ endif
 BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/nexus_container_test$(EXE)
 
+# Part 1: isolated cgroup reliability test (no sudo, NEXUS_CGROUP_ROOT).
+CGROUP_TEST_BIN := $(BUILD_DIR)/nexus_cgroup_test$(EXE)
+
 SRCS := src/container/container.c \
+        src/container/cgroup.c \
+        src/container/namespace.c \
         src/container/process.c \
         tests/container/container_test.c
 OBJS := $(BUILD_DIR)/container.o \
+        $(BUILD_DIR)/cgroup.o \
+        $(BUILD_DIR)/namespace.o \
         $(BUILD_DIR)/process.o \
         $(BUILD_DIR)/container_test.o
 
 # Container Engine demonstration (Ayush's runtime + an examples/ driver):
-# links the real container + placeholder-process sources.
+# links the real container + placeholder-process sources, plus cgroup.c since
+# the integrated lifecycle provisions cgroups in create/start/delete.
 CONTAINER_DEMO_BIN := $(BUILD_DIR)/container_engine_demo$(EXE)
 CONTAINER_DEMO_OBJS := $(BUILD_DIR)/container.o \
+                       $(BUILD_DIR)/cgroup.o \
                        $(BUILD_DIR)/process.o \
                        $(BUILD_DIR)/container_demo.o
+
+CGROUP_OBJS := $(BUILD_DIR)/cgroup.o \
+               $(BUILD_DIR)/process.o \
+               $(BUILD_DIR)/cgroup_test.o
 
 # Phase 1 DB storage (Digvijay): Page + PageStorage, C++17.
 DB_TEST_BIN := $(BUILD_DIR)/db_storage_test$(EXE)
@@ -62,7 +78,7 @@ BUFFER_OBJS := $(BUILD_DIR)/page.o \
                $(BUILD_DIR)/buffer_pool.o \
                $(BUILD_DIR)/buffer_pool_test.o
 
-all: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -71,23 +87,35 @@ else
 	mkdir -p $(BUILD_DIR)
 endif
 
-$(BUILD_DIR)/container.o: src/container/container.c include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/container.o: src/container/container.c include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/cgroup.o: src/container/cgroup.c include/container/cgroup.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/namespace.o: src/container/namespace.c include/container/namespace.h include/container/container.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/process.o: src/container/process.c include/container/process.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/container_test.o: tests/container/container_test.c include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/container_test.o: tests/container/container_test.c include/container/container.h include/container/cgroup.h include/container/namespace.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(TEST_BIN): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@
 
-$(BUILD_DIR)/container_demo.o: examples/container/container_engine_demo.c include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/container_demo.o: examples/container/container_engine_demo.c include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(CONTAINER_DEMO_BIN): $(CONTAINER_DEMO_OBJS)
 	$(CC) $(CFLAGS) $(CONTAINER_DEMO_OBJS) -o $@
+
+$(BUILD_DIR)/cgroup_test.o: tests/container/cgroup_test.c include/container/cgroup.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(CGROUP_TEST_BIN): $(CGROUP_OBJS)
+	$(CC) $(CFLAGS) $(CGROUP_OBJS) -o $@
 
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
@@ -110,8 +138,9 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-test: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
 	$(TEST_BIN)
+	$(CGROUP_TEST_BIN)
 	$(DB_TEST_BIN)
 	$(BUFFER_TEST_BIN)
 	$(CONTAINER_DEMO_BIN)

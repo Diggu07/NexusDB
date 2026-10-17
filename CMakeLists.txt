@@ -29,17 +29,29 @@ include_directories(include)
 
 add_executable(nexus_container_test
   src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
   src/container/process.c
   tests/container/container_test.c
 )
 
 # Runnable demonstration of the Container Engine public API (Ayush's runtime):
 # validation, create/start/stop/delete, and error paths. Links the real
-# container + placeholder-process sources; no lifecycle logic is reimplemented.
+# container + placeholder-process sources; the integrated lifecycle provisions
+# cgroups in container_create/start/delete, so cgroup.c is linked too. No
+# lifecycle logic is reimplemented here.
 add_executable(container_engine_demo
   src/container/container.c
+  src/container/cgroup.c
   src/container/process.c
   examples/container/container_engine_demo.c
+)
+
+# Part 1: isolated cgroup reliability test (NEXUS_CGROUP_ROOT, no sudo).
+add_executable(nexus_cgroup_test
+  src/container/cgroup.c
+  src/container/process.c
+  tests/container/cgroup_test.c
 )
 
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
@@ -79,6 +91,7 @@ add_executable(nexusdb_engine_demo
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME container_engine_demo COMMAND container_engine_demo)
+add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
 add_test(NAME db_storage COMMAND db_storage_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)

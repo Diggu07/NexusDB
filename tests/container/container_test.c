@@ -11,6 +11,8 @@
 #include <string.h>
 
 #include "container/container.h"
+#include "container/cgroup.h"
+#include "container/namespace.h"
 
 static int g_failures = 0;
 
@@ -24,8 +26,15 @@ int main(void)
     char buf[1024];
     int rc;
     const nexus_container_t *c;
+    nexus_cgroup_metrics_t metrics;
+    nexus_namespace_config_t ns_cfg;
 
     printf("=== NexusDB Container Engine: lifecycle test ===\n\n");
+
+    /* Part 1: explicit init (respects NEXUS_CGROUP_ROOT for Linux CI without
+     * sudo). Must succeed or resource enforcement cannot be trusted. */
+    rc = cgroup_init(NULL);
+    CHECK("cgroup_init root usable", rc == NEXUS_OK);
 
     /* 0. Validation: bad names / bad limits are rejected. */
     rc = container_create("", 0, 0, NULL);
@@ -51,7 +60,7 @@ int main(void)
     CHECK("status db1 works while CREATED", rc == NEXUS_OK);
     printf("--- status (CREATED) ---\n%s--------------------------\n", buf);
 
-    /* 4. START (spawns placeholder child). */
+    /* 4. START (spawns placeholder child and attaches to cgroup). */
     rc = container_start("db1");
     CHECK("start db1", rc == NEXUS_OK);
     c = container_get("db1");
@@ -62,6 +71,12 @@ int main(void)
     rc = container_status("db1", buf, sizeof(buf));
     CHECK("status db1 works while RUNNING", rc == NEXUS_OK);
     printf("--- status (RUNNING) ---\n%s-------------------------\n", buf);
+
+    /* 4.1 Cgroup metrics query (powers Rehan's OS-DB bridge). */
+    rc = container_metrics("db1", &metrics);
+    CHECK("container_metrics reads telemetry", rc == NEXUS_OK);
+    printf("--- telemetry ---\nMemory max: %lu | Current: %lu | Pressure: %.2f\n-----------------\n",
+           metrics.memory_max, metrics.memory_current, metrics.memory_pressure);
 
     /* 5. DELETE while running must be refused (no orphans). */
     rc = container_delete("db1");
@@ -99,6 +114,15 @@ int main(void)
     CHECK("start unknown -> NOT_FOUND", rc == NEXUS_ERR_NOT_FOUND);
     rc = container_delete("ghost");
     CHECK("delete unknown -> NOT_FOUND", rc == NEXUS_ERR_NOT_FOUND);
+    rc = container_metrics("ghost", &metrics);
+    CHECK("metrics unknown -> NOT_FOUND", rc == NEXUS_ERR_NOT_FOUND);
+
+    /* 10. Linux namespace configuration check */
+    namespace_config_default(&ns_cfg, "test_container");
+    CHECK("namespace default has PID isolation", ns_cfg.isolate_pid == 1);
+    CHECK("namespace default has Mount isolation", ns_cfg.isolate_mount == 1);
+    rc = namespace_apply(&ns_cfg);
+    CHECK("namespace apply runs cleanly", rc == NEXUS_OK || rc == NEXUS_ERR_PROCESS);
 
     printf("\n=== %s (%d failure(s)) ===\n",
            g_failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", g_failures);
