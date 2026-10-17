@@ -1,8 +1,8 @@
 # NexusDB — Container Engine (foundation) build.
 #
 # Targets:
-#   make            build all test binaries
-#   make test       build + run all tests (container + db storage)
+#   make            build all test binaries + the container demo
+#   make test       build + run all tests (container + db storage + demo)
 #   make clean      remove build artefacts
 #
 # Linux (Ubuntu/WSL2, the real target):
@@ -42,6 +42,13 @@ OBJS := $(BUILD_DIR)/container.o \
         $(BUILD_DIR)/process.o \
         $(BUILD_DIR)/container_test.o
 
+# Container Engine demonstration (Ayush's runtime + an examples/ driver):
+# links the real container + placeholder-process sources.
+CONTAINER_DEMO_BIN := $(BUILD_DIR)/container_engine_demo$(EXE)
+CONTAINER_DEMO_OBJS := $(BUILD_DIR)/container.o \
+                       $(BUILD_DIR)/process.o \
+                       $(BUILD_DIR)/container_demo.o
+
 # Phase 1 DB storage (Digvijay): Page + PageStorage, C++17.
 DB_TEST_BIN := $(BUILD_DIR)/db_storage_test$(EXE)
 DB_OBJS := $(BUILD_DIR)/page.o \
@@ -55,7 +62,7 @@ BUFFER_OBJS := $(BUILD_DIR)/page.o \
                $(BUILD_DIR)/buffer_pool.o \
                $(BUILD_DIR)/buffer_pool_test.o
 
-all: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN)
+all: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -75,6 +82,12 @@ $(BUILD_DIR)/container_test.o: tests/container/container_test.c include/containe
 
 $(TEST_BIN): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@
+
+$(BUILD_DIR)/container_demo.o: examples/container/container_engine_demo.c include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(CONTAINER_DEMO_BIN): $(CONTAINER_DEMO_OBJS)
+	$(CC) $(CFLAGS) $(CONTAINER_DEMO_OBJS) -o $@
 
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
@@ -97,10 +110,11 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-test: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN)
+test: $(TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
 	$(TEST_BIN)
 	$(DB_TEST_BIN)
 	$(BUFFER_TEST_BIN)
+	$(CONTAINER_DEMO_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)
