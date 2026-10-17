@@ -38,6 +38,9 @@ TEST_BIN  := $(BUILD_DIR)/nexus_container_test$(EXE)
 # Part 1: isolated cgroup reliability test (no sudo, NEXUS_CGROUP_ROOT).
 CGROUP_TEST_BIN := $(BUILD_DIR)/nexus_cgroup_test$(EXE)
 
+# Part 2: real process-launch test (configured exe, self-attach, namespaces).
+PROCESS_TEST_BIN := $(BUILD_DIR)/nexus_process_test$(EXE)
+
 SRCS := src/container/container.c \
         src/container/cgroup.c \
         src/container/namespace.c \
@@ -53,13 +56,19 @@ CGROUP_OBJS := $(BUILD_DIR)/cgroup.o \
                $(BUILD_DIR)/process.o \
                $(BUILD_DIR)/cgroup_test.o
 
+PROCESS_OBJS := $(BUILD_DIR)/container.o \
+                $(BUILD_DIR)/cgroup.o \
+                $(BUILD_DIR)/namespace.o \
+                $(BUILD_DIR)/process.o \
+                $(BUILD_DIR)/process_test.o
+
 # Phase 1 DB storage (Digvijay): Page + PageStorage, C++17.
 DB_TEST_BIN := $(BUILD_DIR)/db_storage_test$(EXE)
 DB_OBJS := $(BUILD_DIR)/page.o \
            $(BUILD_DIR)/page_storage.o \
            $(BUILD_DIR)/storage_test.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(DB_TEST_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -92,6 +101,12 @@ $(BUILD_DIR)/cgroup_test.o: tests/container/cgroup_test.c include/container/cgro
 $(CGROUP_TEST_BIN): $(CGROUP_OBJS)
 	$(CC) $(CFLAGS) $(CGROUP_OBJS) -o $@
 
+$(BUILD_DIR)/process_test.o: tests/container/process_test.c include/container/container.h include/container/cgroup.h include/container/namespace.h include/container/process.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(PROCESS_TEST_BIN): $(PROCESS_OBJS)
+	$(CC) $(CFLAGS) $(PROCESS_OBJS) -o $@
+
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -104,9 +119,10 @@ $(BUILD_DIR)/storage_test.o: tests/db/storage_test.cpp include/db/page_storage.h
 $(DB_TEST_BIN): $(DB_OBJS)
 	$(CXX) $(CXXFLAGS) $(DB_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(DB_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
+	$(PROCESS_TEST_BIN)
 	$(DB_TEST_BIN)
 
 clean:

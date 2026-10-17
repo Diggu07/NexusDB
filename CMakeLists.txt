@@ -41,6 +41,15 @@ add_executable(nexus_cgroup_test
   tests/container/cgroup_test.c
 )
 
+# Part 2: real process-launch test (configured exe, self-attach, namespaces).
+add_executable(nexus_process_test
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  tests/container/process_test.c
+)
+
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
 add_executable(db_storage_test
   src/db/storage/page.cpp
@@ -51,4 +60,5 @@ add_executable(db_storage_test
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
+add_test(NAME process_launch COMMAND nexus_process_test)
 add_test(NAME db_storage COMMAND db_storage_test)

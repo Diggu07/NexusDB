@@ -44,8 +44,9 @@ int main(void)
     rc = container_create("okname", 0, 101, NULL);
     CHECK("reject cpu > 100", rc == NEXUS_ERR_INVALID);
 
-    /* 1. CREATE */
-    rc = container_create("db1", 256UL * 1024 * 1024, 50, "./db_engine");
+    /* 1. CREATE (no db_engine: lifecycle demo uses the placeholder idler;
+     * real-exe launch is covered by tests/container/process_test.c). */
+    rc = container_create("db1", 256UL * 1024 * 1024, 50, NULL);
     CHECK("create db1 (256MB, cpu 50)", rc == NEXUS_OK);
     c = container_get("db1");
     CHECK("registry holds db1 in CREATED with no pid",

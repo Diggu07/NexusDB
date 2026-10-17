@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "container/cgroup.h"
+#include "container/namespace.h"
 #include "container/process.h"
 
 #define NEXUS_MAX_CONTAINERS 64
@@ -156,6 +157,22 @@ int container_start(const char *name)
 {
     slot_t *s;
     long pid;
+    nexus_namespace_config_t ns_cfg;
+    const char *exe;
+    char *argv[2];
+#ifdef _WIN32
+    /* Built-in idler when no db_engine is configured (dev shim). */
+    static char win_idle0[] = "ping";
+    static char win_idle1[] = "-n";
+    static char win_idle2[] = "3600";
+    static char win_idle3[] = "127.0.0.1";
+    char *win_idle_argv[] = {win_idle0, win_idle1, win_idle2, win_idle3, NULL};
+    static const char win_idle_exe[] = "C:\\Windows\\System32\\ping.exe";
+#else
+    static char idle0[] = "sleep";
+    static char idle1[] = "3600";
+    char *idle_argv[] = {idle0, idle1, NULL};
+#endif
 
     if (!name_valid(name))
         return NEXUS_ERR_INVALID;
@@ -167,17 +184,28 @@ int container_start(const char *name)
     if (s->c.pid != -1 && process_is_alive(s->c.pid))
         return NEXUS_ERR_STATE; /* stale bookkeeping: child still alive */
 
-    pid = process_spawn_placeholder();
-    if (pid <= 0)
-        return NEXUS_ERR_PROCESS;
+    /* Namespaces are configured per container; the child applies them before
+     * exec (see process.h for PID-namespace semantics). The child also joins
+     * its cgroup itself before exec, so limits apply from the start and a
+     * limit that was not applied is never reported as success. */
+    namespace_config_default(&ns_cfg, s->c.name);
 
-    /* A limit that was not applied must never be reported as success: if the
-     * child cannot join its cgroup, reap it and stay in the prior state. */
-    if (cgroup_attach(s->c.cgroup_path, pid) != NEXUS_OK) {
-        (void)process_stop(pid);
-        s->c.pid = -1;
-        return NEXUS_ERR_PROCESS;
+    if (s->c.db_engine[0] != '\0') {
+        /* Real database executable: direct exec, no shell. */
+        exe = s->c.db_engine;
+        argv[0] = s->c.db_engine;
+        argv[1] = NULL;
+        pid = process_spawn(exe, argv, s->c.cgroup_path, &ns_cfg);
+    } else {
+#ifdef _WIN32
+        pid = process_spawn(win_idle_exe, win_idle_argv, s->c.cgroup_path, &ns_cfg);
+#else
+        pid = process_spawn(idle0, idle_argv, s->c.cgroup_path, &ns_cfg);
+#endif
     }
+    if (pid <= 0)
+        return NEXUS_ERR_PROCESS; /* missing path, exec denied, ns/cgroup
+                                   * failure, or instant exit: no state change */
     s->c.pid = pid;
     s->c.state = NEXUS_RUNNING;
     return NEXUS_OK;
