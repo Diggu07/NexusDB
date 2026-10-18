@@ -2,10 +2,10 @@
  * NexusDB — Live dashboard: ncurses renderer (Rehan).
  *
  * Compiled ONLY when NEXUS_HAVE_NCURSES is defined (CMake find_package(Curses)
- * / Makefile -DNEXUS_HAVE_NCURSES). On the current dev machine ncurses is not
- * installed, so this file is NOT compiled and its behaviour is UNVERIFIED;
- * it must be built and run on Linux/WSL2 with libncurses-dev before the live
- * dashboard is claimed to work.
+ * / Makefile -DNEXUS_HAVE_NCURSES). When ncurses is present this UI is built and
+ * has been exercised under a real terminal on Linux/WSL2 with libncurses-dev;
+ * when ncurses is absent the stub below returns NEXUS_ERR_STATE so a
+ * misconfigured build fails loudly instead of silently doing nothing.
  *
  * Presents the same text as nexus_dashboard_render_text(), so the plain
  * renderer remains the single source of the frame contents and is unit-tested

@@ -8,9 +8,11 @@
  *   - nexus_dashboard_render_text(): always built, plain text into a buffer.
  *     This is the default/fallback and is fully unit-tested.
  *   - nexus_dashboard_run_ncurses(): the live ncurses UI, compiled ONLY when
- *     NEXUS_HAVE_NCURSES is defined. On this dev machine ncurses is not
- *     installed, so it is NOT compiled here and is UNVERIFIED until built on
- *     Linux/WSL2 with libncurses-dev.
+ *     NEXUS_HAVE_NCURSES is defined (libncurses-dev present). When ncurses is
+ *     absent the translation unit still provides a stub that returns
+ *     NEXUS_ERR_STATE, so a misconfigured build fails loudly at runtime. This
+ *     UI has been verified under a real terminal on Linux/WSL2 with
+ *     libncurses-dev.
  *
  * The ncurses loop restores terminal state (endwin), handles KEY_RESIZE, polls
  * at a controlled interval (no busy-wait), and exits on 'q' or a sample error.
