@@ -5,14 +5,23 @@
 #include "container/container.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "container/cgroup.h"
+#include "container/namespace.h"
 #include "container/process.h"
 
 #define NEXUS_MAX_CONTAINERS 64
+
+/* Base directory for per-container DB-engine data. Each configured container
+ * gets <root>/<name> passed to its engine as `--data-dir`. Overridable with
+ * $NEXUSDB_DATA_ROOT (relative to the workload's inherited cwd). */
+#define NEXUS_DATA_ROOT_ENV     "NEXUSDB_DATA_ROOT"
+#define NEXUS_DATA_ROOT_DEFAULT "nexusdb_data"
 
 typedef struct slot {
     int in_use;              /* 0 = never created, 1 = live or tombstone */
@@ -85,6 +94,7 @@ const char *container_strerror(int rc)
     case NEXUS_ERR_STATE:   return "illegal state for this operation";
     case NEXUS_ERR_NOMEM:   return "container registry full";
     case NEXUS_ERR_PROCESS: return "child process operation failed";
+    case NEXUS_ERR_UNSUPPORTED: return "not supported on this platform";
     default:                return "unknown error";
     }
 }
@@ -102,6 +112,15 @@ int container_create(const char *name,
                      unsigned int cpu_percent,
                      const char *db_engine)
 {
+    return container_create_ex(name, memory_bytes, cpu_percent, db_engine, NULL);
+}
+
+int container_create_ex(const char *name,
+                        unsigned long memory_bytes,
+                        unsigned int cpu_percent,
+                        const char *db_engine,
+                        const nexus_namespace_config_t *namespaces)
+{
     slot_t *dup, *s;
     char tmp_path[NEXUS_PATH_MAX];
     int rc;
@@ -111,6 +130,9 @@ int container_create(const char *name,
     if (cpu_percent > 100)
         return NEXUS_ERR_INVALID;
     if (db_engine != NULL && strlen(db_engine) >= NEXUS_PATH_MAX)
+        return NEXUS_ERR_INVALID;
+    if (namespaces != NULL && namespaces->hostname != NULL &&
+        strlen(namespaces->hostname) >= NEXUS_NAME_MAX)
         return NEXUS_ERR_INVALID;
 
     dup = find_slot(name);
@@ -149,13 +171,152 @@ int container_create(const char *name,
         s->c.db_engine[0] = '\0';
     s->c.created_at = (long)time(NULL);
 
+    /* Copy the requested namespace isolation into the record (fields were
+     * zeroed above, so a NULL config leaves isolation disabled). */
+    if (namespaces != NULL) {
+        s->c.ns_pid = namespaces->isolate_pid ? 1 : 0;
+        s->c.ns_mount = namespaces->isolate_mount ? 1 : 0;
+        s->c.ns_net = namespaces->isolate_net ? 1 : 0;
+        s->c.ns_uts = namespaces->isolate_uts ? 1 : 0;
+        s->c.ns_ipc = namespaces->isolate_ipc ? 1 : 0;
+        if (namespaces->hostname != NULL)
+            snprintf(s->c.ns_hostname, sizeof(s->c.ns_hostname), "%s",
+                     namespaces->hostname);
+    }
+
     return NEXUS_OK;
+}
+
+/* 1 if the record requests any Linux namespace isolation. */
+static int container_ns_requested(const nexus_container_t *c)
+{
+    return c->ns_pid || c->ns_mount || c->ns_net || c->ns_uts || c->ns_ipc;
+}
+
+#ifndef _WIN32
+/* Rebuild a namespace config from the (verbatim, caller-owned) record. */
+static void container_ns_config(const nexus_container_t *c,
+                                nexus_namespace_config_t *out)
+{
+    out->isolate_pid = c->ns_pid;
+    out->isolate_mount = c->ns_mount;
+    out->isolate_net = c->ns_net;
+    out->isolate_uts = c->ns_uts;
+    out->isolate_ipc = c->ns_ipc;
+    out->hostname = (c->ns_hostname[0] != '\0') ? c->ns_hostname : NULL;
+}
+
+/* Child-side hook: configure the namespaces the child was cloned into. Returns
+ * 0 on success, else the errno to report to the parent. */
+static int ns_child_prepare(void *arg)
+{
+    const nexus_namespace_config_t *cfg =
+        (const nexus_namespace_config_t *)arg;
+
+    if (namespace_configure_child(cfg) != NEXUS_OK)
+        return errno != 0 ? errno : EPERM;
+    return 0;
+}
+#endif
+
+/* Build the workload exec spec for container `c`.
+ *
+ * - c->db_engine empty -> the built-in placeholder (sleep/ping), preserving the
+ *   pre-P3 lifecycle behavior that the existing tests rely on.
+ * - c->db_engine set   -> that executable, invoked as
+ *   `db_engine --data-dir <root>/<name>` where <root> is $NEXUSDB_DATA_ROOT
+ *   (default ./nexusdb_data).
+ *
+ * spec->path/argv borrow c->db_engine and the caller-owned `data_dir`/`argv`
+ * buffers, which must outlive the spawn+release sequence (they live in
+ * container_start's frame). Returns 0 on success, -1 when the derived path
+ * would truncate or `argv` is too small. */
+static int workload_spec(const nexus_container_t *c, process_exec_t *spec,
+                         char *data_dir, size_t data_dir_len,
+                         const char **argv, size_t argv_cap)
+{
+    const char *root;
+
+    if (c->db_engine[0] == '\0') {
+        static const char *const placeholder_argv[] = { "sleep", "3600", NULL };
+        spec->path = "sleep";
+        spec->argv = placeholder_argv;
+        spec->cwd = NULL;
+        return 0;
+    }
+
+    root = getenv(NEXUS_DATA_ROOT_ENV);
+    if (root == NULL || root[0] == '\0')
+        root = NEXUS_DATA_ROOT_DEFAULT;
+    if (snprintf(data_dir, data_dir_len, "%s/%s", root, c->name) >=
+        (int)data_dir_len)
+        return -1;
+    if (argv_cap < 4)
+        return -1;
+
+    argv[0] = c->db_engine;
+    argv[1] = "--data-dir";
+    argv[2] = data_dir;
+    argv[3] = NULL;
+
+    spec->path = c->db_engine;
+    spec->argv = argv;
+    spec->cwd = NULL;
+    return 0;
+}
+
+/* Spawn the workload. On POSIX the child is spawned GATED: it is created in
+ * the requested namespaces but blocked before exec, so container_start can
+ * attach it to its cgroup before the workload runs. On Windows the shim has no
+ * pre-exec pause, so it always launches the built-in placeholder (a configured
+ * engine is rejected earlier in container_start). Returns pid (>0) or -1. */
+static long workload_spawn(const process_exec_t *spec, process_gate_t *gate,
+                           const process_gate_config_t *gc)
+{
+#ifdef _WIN32
+    (void)spec;
+    (void)gc;
+    gate->pid = -1;
+    gate->release_fd = -1;
+    gate->status_fd = -1;
+    gate->stack = NULL;
+    gate->stack_size = 0;
+    return process_spawn_placeholder();
+#else
+    return process_spawn_gated(spec, gc, gate);
+#endif
+}
+
+/* Release a gated workload to exec (POSIX) / no-op (Windows). 0 on success,
+ * -1 if the workload failed to start (already reaped). */
+static int workload_release(process_gate_t *gate)
+{
+#ifdef _WIN32
+    (void)gate;
+    return 0;
+#else
+    return process_gate_release(gate) > 0 ? 0 : -1;
+#endif
+}
+
+/* Tear down a workload that could not be attached: abort the still-blocked
+ * child (POSIX) / terminate it (Windows). */
+static void workload_kill(long pid, process_gate_t *gate)
+{
+#ifdef _WIN32
+    (void)gate;
+    (void)process_stop(pid);
+#else
+    (void)pid;
+    process_gate_abort(gate);
+#endif
 }
 
 int container_start(const char *name)
 {
     slot_t *s;
     long pid;
+    process_gate_t gate;
 
     if (!name_valid(name))
         return NEXUS_ERR_INVALID;
@@ -167,17 +328,64 @@ int container_start(const char *name)
     if (s->c.pid != -1 && process_is_alive(s->c.pid))
         return NEXUS_ERR_STATE; /* stale bookkeeping: child still alive */
 
-    pid = process_spawn_placeholder();
+    gate.pid = -1;
+    gate.release_fd = -1;
+    gate.status_fd = -1;
+    gate.stack = NULL;
+    gate.stack_size = 0;
+
+    {
+        process_exec_t spec;
+        char data_dir[NEXUS_PATH_MAX];
+        const char *argv[4];
+        const process_gate_config_t *gcp = NULL;
+
+#ifndef _WIN32
+        process_gate_config_t gc;
+        nexus_namespace_config_t ns;
+        if (container_ns_requested(&s->c)) {
+            container_ns_config(&s->c, &ns);
+            gc.clone_flags = namespace_clone_flags(&ns);
+            gc.child_prepare = ns_child_prepare;
+            gc.child_arg = &ns;
+            gcp = &gc;
+        }
+#else
+        /* Gated launch is POSIX-only: a configured DB engine (which needs the
+         * attach-before-exec guarantee) and namespace isolation both refuse
+         * rather than silently run unmanaged. */
+        if (s->c.db_engine[0] != '\0' || container_ns_requested(&s->c))
+            return NEXUS_ERR_UNSUPPORTED; /* explicit: no false success */
+#endif
+
+        if (workload_spec(&s->c, &spec, data_dir, sizeof(data_dir),
+                          argv, sizeof(argv) / sizeof(argv[0])) != 0)
+            return NEXUS_ERR_INVALID;
+
+        /* Spawn the workload (placeholder or configured DB engine) in the
+         * configured namespaces, BLOCKED before exec so it cannot run outside
+         * its cgroup. */
+        pid = workload_spawn(&spec, &gate, gcp);
+    }
     if (pid <= 0)
         return NEXUS_ERR_PROCESS;
 
     /* A limit that was not applied must never be reported as success: if the
-     * child cannot join its cgroup, reap it and stay in the prior state. */
+     * child cannot join its cgroup, kill it while it is still blocked and stay
+     * in the prior state. */
     if (cgroup_attach(s->c.cgroup_path, pid) != NEXUS_OK) {
-        (void)process_stop(pid);
+        workload_kill(pid, &gate);
         s->c.pid = -1;
         return NEXUS_ERR_PROCESS;
     }
+
+    /* Attached: let the workload execute. A failed exec is reaped internally,
+     * so a startup failure leaves no zombie and never reaches RUNNING. */
+    if (workload_release(&gate) != 0) {
+        s->c.pid = -1;
+        return NEXUS_ERR_PROCESS;
+    }
+
     s->c.pid = pid;
     s->c.state = NEXUS_RUNNING;
     return NEXUS_OK;

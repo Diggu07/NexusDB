@@ -41,6 +41,9 @@ TEST_BIN  := $(BUILD_DIR)/nexus_container_test$(EXE)
 # Part 1: isolated cgroup reliability test (no sudo, NEXUS_CGROUP_ROOT).
 CGROUP_TEST_BIN := $(BUILD_DIR)/nexus_cgroup_test$(EXE)
 
+# P0: direct process-execution API test (POSIX; Windows reports ENOSYS).
+PROCESS_TEST_BIN := $(BUILD_DIR)/nexus_process_test$(EXE)
+
 SRCS := src/container/container.c \
         src/container/cgroup.c \
         src/container/namespace.c \
@@ -58,12 +61,22 @@ OBJS := $(BUILD_DIR)/container.o \
 CONTAINER_DEMO_BIN := $(BUILD_DIR)/container_engine_demo$(EXE)
 CONTAINER_DEMO_OBJS := $(BUILD_DIR)/container.o \
                        $(BUILD_DIR)/cgroup.o \
+                       $(BUILD_DIR)/namespace.o \
                        $(BUILD_DIR)/process.o \
                        $(BUILD_DIR)/container_demo.o
 
 CGROUP_OBJS := $(BUILD_DIR)/cgroup.o \
                $(BUILD_DIR)/process.o \
                $(BUILD_DIR)/cgroup_test.o
+
+PROCESS_OBJS := $(BUILD_DIR)/process.o \
+                $(BUILD_DIR)/process_test.o
+
+# P2: Linux namespace integration test (env-limited when unprivileged).
+NS_TEST_BIN := $(BUILD_DIR)/nexus_namespace_test$(EXE)
+NS_OBJS := $(BUILD_DIR)/process.o \
+           $(BUILD_DIR)/namespace.o \
+           $(BUILD_DIR)/namespace_test.o
 
 # Phase 1 DB storage (Digvijay): Page + PageStorage, C++17.
 DB_TEST_BIN := $(BUILD_DIR)/db_storage_test$(EXE)
@@ -78,7 +91,42 @@ BUFFER_OBJS := $(BUILD_DIR)/page.o \
                $(BUILD_DIR)/buffer_pool.o \
                $(BUILD_DIR)/buffer_pool_test.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
+# P3: the real DB-engine executable (Digvijay) launched by the container as its
+# workload. Minimal: opens PageStorage + BufferPool and idles until SIGTERM.
+ENGINE_BIN := $(BUILD_DIR)/db_engine$(EXE)
+ENGINE_OBJS := $(BUILD_DIR)/page.o \
+               $(BUILD_DIR)/page_storage.o \
+               $(BUILD_DIR)/buffer_pool.o \
+               $(BUILD_DIR)/db_engine.o
+
+# P3: db_engine executable contract test (direct-exec, POSIX).
+ENG_TEST_BIN := $(BUILD_DIR)/nexus_db_engine_test$(EXE)
+ENG_TEST_OBJS := $(BUILD_DIR)/process.o \
+                 $(BUILD_DIR)/db_engine_test.o
+
+# The container lifecycle test and the engine-contract test locate the built
+# engine via $NEXUSDB_DB_ENGINE (path relative to the make cwd).
+export NEXUSDB_DB_ENGINE := $(ENGINE_BIN)
+
+# P4: controlled workload helpers + cgroup v2 CPU/memory enforcement tests.
+# The enforcement tests need a real writable cgroup v2 hierarchy; without one
+# they report ENV-LIMITED (exit 0) rather than passing.
+CPU_WORKLOAD_BIN := $(BUILD_DIR)/nexus_cpu_workload$(EXE)
+MEM_WORKLOAD_BIN := $(BUILD_DIR)/nexus_mem_workload$(EXE)
+CPU_ENFORCE_BIN := $(BUILD_DIR)/nexus_cpu_enforce_test$(EXE)
+MEM_ENFORCE_BIN := $(BUILD_DIR)/nexus_mem_enforce_test$(EXE)
+CPU_ENFORCE_OBJS := $(BUILD_DIR)/cgroup.o \
+                    $(BUILD_DIR)/process.o \
+                    $(BUILD_DIR)/cpu_enforce_test.o
+MEM_ENFORCE_OBJS := $(BUILD_DIR)/cgroup.o \
+                    $(BUILD_DIR)/process.o \
+                    $(BUILD_DIR)/mem_enforce_test.o
+
+# The enforcement tests locate their workload helpers via these paths.
+export NEXUS_CPU_WORKLOAD := $(CPU_WORKLOAD_BIN)
+export NEXUS_MEM_WORKLOAD := $(MEM_WORKLOAD_BIN)
+
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -117,6 +165,18 @@ $(BUILD_DIR)/cgroup_test.o: tests/container/cgroup_test.c include/container/cgro
 $(CGROUP_TEST_BIN): $(CGROUP_OBJS)
 	$(CC) $(CFLAGS) $(CGROUP_OBJS) -o $@
 
+$(BUILD_DIR)/process_test.o: tests/container/process_test.c include/container/process.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(PROCESS_TEST_BIN): $(PROCESS_OBJS)
+	$(CC) $(CFLAGS) $(PROCESS_OBJS) -o $@
+
+$(BUILD_DIR)/namespace_test.o: tests/container/namespace_test.c include/container/namespace.h include/container/process.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(NS_TEST_BIN): $(NS_OBJS)
+	$(CC) $(CFLAGS) $(NS_OBJS) -o $@
+
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -138,12 +198,53 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
+$(BUILD_DIR)/db_engine.o: src/db/engine/db_engine.cpp include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/error.h include/common/config.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(ENGINE_BIN): $(ENGINE_OBJS)
+	$(CXX) $(CXXFLAGS) $(ENGINE_OBJS) -o $@
+
+$(BUILD_DIR)/db_engine_test.o: tests/container/db_engine_test.c include/container/process.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(ENG_TEST_BIN): $(ENG_TEST_OBJS)
+	$(CC) $(CFLAGS) $(ENG_TEST_OBJS) -o $@
+
+$(BUILD_DIR)/cpu_workload.o: tests/container/cpu_workload.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(CPU_WORKLOAD_BIN): $(BUILD_DIR)/cpu_workload.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD_DIR)/mem_workload.o: tests/container/mem_workload.c | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(MEM_WORKLOAD_BIN): $(BUILD_DIR)/mem_workload.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD_DIR)/cpu_enforce_test.o: tests/container/cpu_enforce_test.c include/container/cgroup.h include/container/container.h include/container/process.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(CPU_ENFORCE_BIN): $(CPU_ENFORCE_OBJS) $(CPU_WORKLOAD_BIN)
+	$(CC) $(CFLAGS) $(CPU_ENFORCE_OBJS) -o $@
+
+$(BUILD_DIR)/mem_enforce_test.o: tests/container/mem_enforce_test.c include/container/cgroup.h include/container/container.h include/container/process.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(MEM_ENFORCE_BIN): $(MEM_ENFORCE_OBJS) $(MEM_WORKLOAD_BIN)
+	$(CC) $(CFLAGS) $(MEM_ENFORCE_OBJS) -o $@
+
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
+	$(PROCESS_TEST_BIN)
+	$(NS_TEST_BIN)
 	$(DB_TEST_BIN)
 	$(BUFFER_TEST_BIN)
 	$(CONTAINER_DEMO_BIN)
+	$(ENG_TEST_BIN)
+	$(CPU_ENFORCE_BIN)
+	$(MEM_ENFORCE_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)

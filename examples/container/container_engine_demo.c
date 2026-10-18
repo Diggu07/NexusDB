@@ -16,19 +16,21 @@
  *   - deleting the container and verifying the DELETED tombstone
  *   - error paths: unknown names, illegal states, bad status arguments
  *
- * WHAT IS *NOT* IMPLEMENTED HERE (do not infer otherwise from code existing):
- *   - The runtime launches a PLACEHOLDER child process (src/container/process.c:
- *     "ping" on Windows, "sleep" on Linux). It does NOT launch the database
- *     engine. The db_engine field is only a recorded path string.
+ * WHAT THIS DEMO DOES *NOT* DO (do not infer otherwise from code existing):
+ *   - This demo drives the built-in PLACEHOLDER child (src/container/process.c:
+ *     "sleep" on Linux, "ping" on Windows). When a container is created with a
+ *     non-empty db_engine, container_start() instead launches that executable
+ *     as `db_engine --data-dir ...` (see src/db/engine/db_engine.cpp); that
+ *     configured-engine path is exercised by tests/container/container_test.c.
  *   - cgroups v2 ARE provisioned by the integrated lifecycle: container_create
  *     creates the cgroup and writes memory.max/cpu.max, container_start attaches
  *     the child, and container_delete destroys it. On Linux this is the real
  *     /sys/fs/cgroup/nexusdb/<name>; on the Windows dev shim it is a %TEMP%
  *     directory holding mock telemetry files. Kernel *enforcement* of the
  *     limits is only exercised on Linux (see tests/container/cgroup_test.c).
- *   - Linux namespaces are implemented (src/container/namespace.c) but NOT
- *     enforced by the lifecycle: container.c never calls namespace_apply(), so
- *     the child process is not actually placed into new namespaces.
+ *   - Linux namespaces ARE enforced (P2) when requested via container_create_ex;
+ *     this demo uses container_create (no isolation), so the placeholder child
+ *     runs in the host namespaces.
  *
  * Exit code: 0 if every check passed, 1 if any check failed.
  * Total checks are counted dynamically at run time.
@@ -39,6 +41,7 @@
 #include <string.h>
 
 #include "container/container.h"
+#include "container/cgroup.h"
 
 #ifdef _WIN32
 #include <process.h>
@@ -138,7 +141,10 @@ int main(void)
     /* ------------------------------------------------------------------ */
     printf("\n[2] Create + initial state\n");
 
-    rc = container_create(name, 256UL * 1024 * 1024, 50, "./db_engine");
+    /* No db_engine configured -> the built-in placeholder is the workload,
+     * keeping this demo self-contained (the configured-engine launch path is
+     * covered by tests/container/container_test.c). */
+    rc = container_create(name, 256UL * 1024 * 1024, 50, NULL);
     CHECK("create valid container returns NEXUS_OK", rc == NEXUS_OK);
 
     c = container_get(name);
@@ -149,8 +155,8 @@ int main(void)
     CHECK("memory limit recorded (256 MiB)",
           c != NULL && c->memory_bytes == 256UL * 1024 * 1024);
     CHECK("cpu limit recorded (50%)", c != NULL && c->cpu_percent == 50);
-    CHECK("db_engine path recorded (string only)",
-          c != NULL && strcmp(c->db_engine, "./db_engine") == 0);
+    CHECK("no db_engine configured -> placeholder workload",
+          c != NULL && c->db_engine[0] == '\0');
 #ifdef _WIN32
     /* Windows dev shim: the cgroup is a real directory under %TEMP% holding
      * mock telemetry files (created, but not a kernel cgroup). */
@@ -158,12 +164,18 @@ int main(void)
           c != NULL && strstr(c->cgroup_path, "nexus_cgroup") != NULL &&
               strstr(c->cgroup_path, name) != NULL);
 #else
-    /* Linux: the real cgroup v2 path is created under the configured root. */
-    CHECK("cgroup provisioned at the real v2 path",
-          c != NULL &&
-              strncmp(c->cgroup_path, "/sys/fs/cgroup/nexusdb/",
-                      strlen("/sys/fs/cgroup/nexusdb/")) == 0 &&
-              strstr(c->cgroup_path, name) != NULL);
+    /* Linux: the real cgroup v2 path is created under the configured root.
+     * Derive the expected prefix from the same configuration the
+     * implementation uses (cgroup_init override / $NEXUS_CGROUP_ROOT /
+     * NEXUS_CGROUP_DEFAULT_ROOT) instead of hardcoding a fixed path. */
+    {
+        char prefix[NEXUS_PATH_MAX + 2];
+        snprintf(prefix, sizeof(prefix), "%s/", cgroup_root());
+        CHECK("cgroup provisioned at the real v2 path",
+              c != NULL &&
+                  strncmp(c->cgroup_path, prefix, strlen(prefix)) == 0 &&
+                  strstr(c->cgroup_path, name) != NULL);
+    }
 #endif
 
     rc = container_create(name, 0, 0, NULL);

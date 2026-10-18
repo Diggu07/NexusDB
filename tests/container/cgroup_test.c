@@ -61,6 +61,20 @@ static void child_path(char *buf, size_t len, const char *dir, const char *file)
 #endif
 }
 
+/* Materialize a metric file inside a fake (temp-directory) cgroup. Real
+ * kernel cgroups expose these files themselves, but on Linux cgroup_create
+ * intentionally does NOT fabricate kernel files — so the isolated-root
+ * fixture tests must supply controlled values themselves. */
+static void write_metric(const char *dir, const char *file, const char *content)
+{
+    char p[NEXUS_PATH_MAX + 32];
+    child_path(p, sizeof(p), dir, file);
+    {
+        FILE *f = fopen(p, "w");
+        if (f) { fprintf(f, "%s\n", content); fclose(f); }
+    }
+}
+
 int main(void)
 {
     char root[NEXUS_PATH_MAX];
@@ -117,9 +131,19 @@ int main(void)
     CHECK("cgroup_create cg1", rc == NEXUS_OK);
     rc = cgroup_set_limits(path, 256UL * 1024 * 1024, 50);
     CHECK("set_limits 256MB/50", rc == NEXUS_OK);
+
+    /* Temp-root fixtures: set_limits writes memory.max/cpu.max, but the
+     * required memory.current (and optional cpu.stat) only exist in a real
+     * kernel cgroup. Provide controlled values so the roundtrip is testable
+     * without claiming kernel behavior. */
+    write_metric(path, "memory.current", "1024");
+    write_metric(path, "cpu.stat", "usage_usec 4242");
+
     rc = cgroup_read_metrics(path, &m);
     CHECK("read_metrics cg1 OK", rc == NEXUS_OK);
     CHECK("memory_max roundtrips", m.memory_max == 256UL * 1024 * 1024);
+    CHECK("memory_current reads fixture", m.memory_current == 1024UL);
+    CHECK("cpu usage reads fixture", m.cpu_usage_usec == 4242UL);
     {
         double want = m.memory_max > 0
             ? (double)m.memory_current / (double)m.memory_max : 0.0;

@@ -59,6 +59,11 @@ static const char *get_root(void)
     return g_cgroup_root;
 }
 
+const char *cgroup_root(void)
+{
+    return get_root();
+}
+
 static int write_file_str(const char *path, const char *value)
 {
     FILE *f = fopen(path, "w");
@@ -152,8 +157,13 @@ int cgroup_init(const char *root_override)
     /* Best-effort: already-enabled controllers or unprivileged hierarchies
      * must not fail init when the root itself is usable. */
     {
-        char sub_path[NEXUS_PATH_MAX];
-        snprintf(sub_path, sizeof(sub_path), "%s/cgroup.subtree_control", g_cgroup_root);
+        /* g_cgroup_root holds up to NEXUS_PATH_MAX-1 chars; suffixing
+         * "/cgroup.subtree_control" needs a buffer one suffix larger so the
+         * path can never be silently truncated before being written. */
+        char sub_path[NEXUS_PATH_MAX + 32];
+        int n = snprintf(sub_path, sizeof(sub_path), "%s/cgroup.subtree_control", g_cgroup_root);
+        if (n < 0 || (size_t)n >= sizeof(sub_path))
+            return NEXUS_ERR_INVALID;
         (void)write_file_str(sub_path, "+memory +cpu");
     }
 #endif

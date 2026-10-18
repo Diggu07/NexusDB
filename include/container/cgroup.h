@@ -26,6 +26,13 @@ typedef struct nexus_cgroup_metrics {
     double memory_pressure;       /* memory_current / memory_max (0.0 to 1.0+) */
 } nexus_cgroup_metrics_t;
 
+/* Return the effective cgroup root used by this implementation: an explicit
+ * cgroup_init() override, else $NEXUS_CGROUP_ROOT, else the platform default
+ * (NEXUS_CGROUP_DEFAULT_ROOT on Linux, a %TEMP% shim on Windows). The pointer
+ * is owned by the implementation and remains valid for the program lifetime;
+ * call after cgroup_init() to observe a resolved override. */
+const char *cgroup_root(void);
+
 /* Initialize root cgroup directory and enable controllers (+memory +cpu).
  * root_override can be NULL (defaults to /sys/fs/cgroup/nexusdb or NEXUS_CGROUP_ROOT env).
  * Idempotent: creating an existing root is success. Enabling subtree_control
