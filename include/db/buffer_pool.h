@@ -65,6 +65,28 @@ namespace nexusdb {
 
 class PageStorage;
 
+// Optional write-ahead-log barrier for the BufferPool.
+//
+// When installed on a pool, BeforePageWrite() is invoked immediately before a
+// dirty page is written to PageStorage. Because EVERY persistence path funnels
+// through BufferPool::FlushFrame -- an explicit FlushPage(), FlushAll(), LRU
+// eviction in AcquireFrame(), and a Resize() shrink -- this single hook is the
+// one place that can enforce the write-ahead rule: the page's redo log records
+// must be durable before the page bytes reach storage.
+//
+// An implementation must make the page's log records durable before returning.
+// A non-ok Status aborts the page write (the page stays dirty) and is
+// propagated to the caller, so a failed log flush prevents the dependent data
+// page from being written.
+//
+// The pool does NOT own the sink. A null sink (the default) preserves the
+// legacy behavior of writing dirty pages directly with no logging.
+class PageLogSink {
+ public:
+  virtual ~PageLogSink() = default;
+  virtual Status BeforePageWrite(const Page& page) = 0;
+};
+
 // A resizable-capacity cache of pages backed by PageStorage.
 class BufferPool {
  public:
@@ -191,6 +213,12 @@ class BufferPool {
   // Number of pins currently held on resident page `id` (0 if not resident).
   std::size_t PinCount(Page::PageId id) const;
 
+  // Install (or clear with nullptr) the write-ahead-log barrier described above.
+  // The pool does not own the sink, which must outlive the pool. Setting a sink
+  // affects only dirty-page writes performed AFTER this call.
+  void SetLogSink(PageLogSink* sink) { log_sink_ = sink; }
+  PageLogSink* log_sink() const { return log_sink_; }
+
  private:
   BufferPool(PageStorage* storage, std::size_t capacity);
 
@@ -238,6 +266,7 @@ class BufferPool {
   // existing frames (and any Handle::page() reference) valid when it grows.
   std::deque<Frame> frames_;
   std::uint64_t access_clock_ = 0;
+  PageLogSink* log_sink_ = nullptr;  // optional write-ahead-log barrier
 };
 
 }  // namespace nexusdb

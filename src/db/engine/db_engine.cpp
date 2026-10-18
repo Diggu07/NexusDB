@@ -2,10 +2,11 @@
 //
 // This is the executable the Container Engine launches as a container's
 // workload. It is deliberately minimal and honest: there is NO SQL parser,
-// NO network listener, and NO client/server protocol. It opens the existing
-// storage stack (PageStorage + BufferPool over the digvijay Database Engine
-// layers), keeps the database file open, and stays alive until the container
-// asks it to stop, at which point it flushes and closes cleanly.
+// NO network listener, and NO client/server protocol. It opens the full
+// Database (PageStorage + WAL + BufferPool + Catalog/QueryExecutor), running
+// WAL recovery on startup, keeps the database open, and stays alive until the
+// container asks it to stop, at which point it flushes (WAL-ordered) and
+// closes cleanly. An abrupt termination leaves the WAL for the next Open.
 //
 // Contract
 // --------
@@ -20,15 +21,16 @@
 //   Startup:
 //     1. parse arguments (unknown/missing-value -> usage error);
 //     2. create the data directory (recursively);
-//     3. open PageStorage on <dir>/nexusdb.db;
-//     4. create the BufferPool over that storage;
-//     5. if the database is empty, allocate a bootstrap page 0 and fetch it
-//        through the pool to prove the cache is wired;
-//     6. print a ready line and block until a shutdown request.
+//     3. Database::Open(<dir>/nexusdb.db, <dir>/nexusdb.wal, pool) -- this
+//        opens the log, replays it into storage BEFORE the pool exists, then
+//        checkpoints and opens the Catalog/QueryExecutor; on a fresh database
+//        it reserves header page 0 and creates a catalog at page 1;
+//     4. print a ready line and block until a shutdown request.
 //
-//   Shutdown (SIGTERM / SIGINT): FlushAll() the pool, close the storage, and
-//   exit 0. The process does NOT busy-loop: it blocks in pause() (POSIX) /
-//   Sleep(1000) (Windows) between checks of the stop flag.
+//   Shutdown (SIGTERM / SIGINT): Database::Close() flushAlls the pool in
+//   WAL order, resets/closes the log, and closes the storage, then exits 0. The
+//   process does NOT busy-loop: it blocks in pause() (POSIX) / Sleep(1000)
+//   (Windows) between checks of the stop flag.
 //
 //   Exit codes:
 //     0  clean shutdown
@@ -61,7 +63,7 @@
 #endif
 
 #include "common/error.h"
-#include "db/buffer_pool.h"
+#include "db/database.h"
 #include "db/page.h"
 #include "db/page_storage.h"
 
@@ -181,45 +183,32 @@ int main(int argc, char** argv) {
 
   const std::filesystem::path db_file =
       std::filesystem::path(data_dir) / "nexusdb.db";
+  const std::filesystem::path wal_file =
+      std::filesystem::path(data_dir) / "nexusdb.wal";
 
-  // 2. Storage.
-  std::unique_ptr<nexusdb::PageStorage> storage;
-  nexusdb::Status s = nexusdb::PageStorage::Open(db_file.string(), &storage);
+  // 2. Open the database: PageStorage + WAL, run recovery, then wire the
+  // BufferPool/M catalog/QueryExecutor. This is the same Open path the CLI and
+  // tests use, so a container-hosted database has the WAL-before-data
+  // guarantee and crash recovery, not just a raw storage stack.
+  std::unique_ptr<nexusdb::Database> db;
+  nexusdb::Status s =
+      nexusdb::Database::Open(db_file.string(), wal_file.string(), pool_frames,
+                              &db);
   if (!s.ok()) {
-    std::fprintf(stderr, "db_engine: storage open failed: %s\n",
+    std::fprintf(stderr, "db_engine: database open failed: %s\n",
                  s.message.c_str());
-    return kExitStorage;
+    const bool pool_error = s.code == nexusdb::DbError::kOutOfMemory ||
+                            s.code == nexusdb::DbError::kBufferFull;
+    return pool_error ? kExitPool : kExitStorage;
   }
 
-  // 3. Buffer pool over the storage.
-  std::unique_ptr<nexusdb::BufferPool> pool;
-  s = nexusdb::BufferPool::Create(storage.get(), pool_frames, &pool);
-  if (!s.ok()) {
-    std::fprintf(stderr, "db_engine: buffer pool create failed: %s\n",
-                 s.message.c_str());
-    return kExitPool;
-  }
-
-  // 4. Bootstrap page 0 on an empty database, then exercise the cache.
+  // 3. Report the recovered page count (bootstrap page 0 + catalog already
+  // exist on a fresh database, created by Database::Open).
   std::uint32_t pages = 0;
-  if (!storage->NumPages(&pages).ok()) {
+  if (!db->storage()->NumPages(&pages).ok()) {
     std::fprintf(stderr, "db_engine: cannot read page count\n");
+    (void)db->Close();
     return kExitStorage;
-  }
-  if (pages == 0) {
-    nexusdb::Page first;
-    if (!storage->AllocatePage(&first).ok()) {
-      std::fprintf(stderr, "db_engine: cannot allocate bootstrap page\n");
-      return kExitStorage;
-    }
-    pages = 1;
-  }
-  {
-    nexusdb::BufferPool::Handle handle;
-    if (!pool->Fetch(0, &handle).ok()) {
-      std::fprintf(stderr, "db_engine: cannot fetch page 0 through the pool\n");
-      return kExitPool;
-    }
   }
 
   (void)std::signal(SIGINT, NexusEngineOnSignal);
@@ -229,20 +218,16 @@ int main(int argc, char** argv) {
               CurrentPid(), db_file.string().c_str(), pages, pool_frames);
   std::fflush(stdout);
 
-  // 5. Idle until a shutdown request. No busy loop.
+  // 4. Idle until a shutdown request. No busy loop.
   while (!g_stop)
     IdleOnce();
 
-  // 6. Graceful shutdown: flush the pool, then close the storage.
-  const nexusdb::Status flush_status = pool->FlushAll();
-  pool.reset();
-  const nexusdb::Status close_status = storage->Close();
-
-  if (!flush_status.ok() || !close_status.ok()) {
-    const nexusdb::Status& bad =
-        !flush_status.ok() ? flush_status : close_status;
+  // 5. Graceful shutdown: flush all dirty pages (WAL-ordered), checkpoint and
+  // close the log, then close storage.
+  const nexusdb::Status close_status = db->Close();
+  if (!close_status.ok()) {
     std::fprintf(stderr, "db_engine: shutdown flush failed: %s\n",
-                 bad.message.c_str());
+                 close_status.message.c_str());
     return kExitShutdown;
   }
 

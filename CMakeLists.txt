@@ -190,6 +190,32 @@ add_executable(query_executor_test
   tests/db/query_executor_test.cpp
 )
 
+# R2: write-ahead log (Digvijay, Database Engine). Append-only page-image redo
+# log with LSN ordering and CRC-32 integrity; unit-tested over real files.
+add_executable(wal_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/wal/wal.cpp
+  tests/db/wal_test.cpp
+)
+
+# R2: crash recovery + write-ahead ordering (Digvijay, Database Engine).
+# Exercises the BufferPool log barrier and the Database open/recovery path,
+# including abrupt child-process termination.
+add_executable(recovery_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  src/db/query/query_executor.cpp
+  src/db/wal/wal.cpp
+  src/db/database/database.cpp
+  tests/db/recovery_test.cpp
+)
+
 # Phase 2: BufferPool over PageStorage (Digvijay, Database Engine).
 add_executable(buffer_pool_test
   src/db/storage/page.cpp
@@ -217,14 +243,21 @@ add_executable(nexusdb_engine_demo
   examples/db/nexusdb_engine_demo.cpp
 )
 
-# P3: the real DB-engine executable the container launches as its workload.
-# Minimal and honest: it opens PageStorage + BufferPool over the database file,
-# stays alive until SIGTERM/SIGINT, then flushes and closes. No SQL, no network
+# P3/R3: the real DB-engine executable the container launches as its workload.
+# Minimal and honest: it opens the full Database (storage + WAL + buffer pool +
+# catalog/query executor), running WAL recovery on startup, stays alive until
+# SIGTERM/SIGINT, then flushes (WAL-ordered) and closes. No SQL, no network
 # listener, no client/server protocol.
 add_executable(db_engine
   src/db/storage/page.cpp
   src/db/storage/page_storage.cpp
   src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  src/db/query/query_executor.cpp
+  src/db/wal/wal.cpp
+  src/db/database/database.cpp
   src/db/engine/db_engine.cpp
 )
 
@@ -334,6 +367,8 @@ add_test(NAME slotted_page COMMAND slotted_page_test)
 add_test(NAME heap_table COMMAND heap_table_test)
 add_test(NAME catalog COMMAND catalog_test)
 add_test(NAME query_executor COMMAND query_executor_test)
+add_test(NAME wal COMMAND wal_test)
+add_test(NAME recovery COMMAND recovery_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)
 add_test(NAME nexusdb_engine_demo COMMAND nexusdb_engine_demo)

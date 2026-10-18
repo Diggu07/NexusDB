@@ -263,6 +263,16 @@ Status BufferPool::FlushFrame(std::size_t frame) {
   if (!f.in_use || !f.page.IsDirty()) {
     return Status::Ok();
   }
+  // Write-ahead rule: the log records needed to recover this page must be
+  // durable before the page reaches storage. FlushFrame is the single choke
+  // point for every dirty-page write (FlushPage, FlushAll, eviction in
+  // AcquireFrame, and Resize shrink), so enforcing it here covers them all.
+  if (log_sink_ != nullptr) {
+    Status log_status = log_sink_->BeforePageWrite(f.page);
+    if (!log_status.ok()) {
+      return log_status;  // keep the page dirty; do not write data ahead of log
+    }
+  }
   Status s = storage_->WritePage(f.page);
   if (!s.ok()) {
     return s;  // leave the page dirty so the write can be retried

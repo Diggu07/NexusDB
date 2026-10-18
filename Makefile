@@ -120,6 +120,27 @@ QUERY_OBJS := $(BUILD_DIR)/page.o \
               $(BUILD_DIR)/query_executor.o \
               $(BUILD_DIR)/query_executor_test.o
 
+# R2 DB write-ahead log (Digvijay): append-only page-image redo log, C++17.
+WAL_TEST_BIN := $(BUILD_DIR)/wal_test$(EXE)
+WAL_OBJS := $(BUILD_DIR)/page.o \
+            $(BUILD_DIR)/page_storage.o \
+            $(BUILD_DIR)/buffer_pool.o \
+            $(BUILD_DIR)/wal.o \
+            $(BUILD_DIR)/wal_test.o
+
+# R2 DB crash recovery + write-ahead ordering (Digvijay): Database open path, C++17.
+RECOVERY_TEST_BIN := $(BUILD_DIR)/recovery_test$(EXE)
+RECOVERY_OBJS := $(BUILD_DIR)/page.o \
+                 $(BUILD_DIR)/page_storage.o \
+                 $(BUILD_DIR)/buffer_pool.o \
+                 $(BUILD_DIR)/slotted_page.o \
+                 $(BUILD_DIR)/heap_table.o \
+                 $(BUILD_DIR)/catalog.o \
+                 $(BUILD_DIR)/query_executor.o \
+                 $(BUILD_DIR)/wal.o \
+                 $(BUILD_DIR)/database.o \
+                 $(BUILD_DIR)/recovery_test.o
+
 # Phase 2 DB buffer pool (Digvijay): BufferPool over PageStorage, C++17.
 BUFFER_TEST_BIN := $(BUILD_DIR)/buffer_pool_test$(EXE)
 BUFFER_OBJS := $(BUILD_DIR)/page.o \
@@ -127,13 +148,11 @@ BUFFER_OBJS := $(BUILD_DIR)/page.o \
                $(BUILD_DIR)/buffer_pool.o \
                $(BUILD_DIR)/buffer_pool_test.o
 
-# P3: the real DB-engine executable (Digvijay) launched by the container as its
-# workload. Minimal: opens PageStorage + BufferPool and idles until SIGTERM.
+# P3/R3: the real DB-engine executable (Digvijay) launched by the container as
+# its workload: opens the full Database (storage + WAL + catalog/executor),
+# runs recovery, and flushes/closes cleanly on SIGTERM.
 ENGINE_BIN := $(BUILD_DIR)/db_engine$(EXE)
-ENGINE_OBJS := $(BUILD_DIR)/page.o \
-               $(BUILD_DIR)/page_storage.o \
-               $(BUILD_DIR)/buffer_pool.o \
-               $(BUILD_DIR)/db_engine.o
+ENGINE_OBJS := $(DB_STACK_OBJS) $(BUILD_DIR)/db_engine.o
 
 # P3: db_engine executable contract test (direct-exec, POSIX).
 ENG_TEST_BIN := $(BUILD_DIR)/nexus_db_engine_test$(EXE)
@@ -232,7 +251,7 @@ BENCH_ENGINE_OBJS := $(BUILD_DIR)/harness.o \
                      $(BUILD_DIR)/buffer_pool.o \
                      $(BUILD_DIR)/benchmark_main_engine.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -413,6 +432,24 @@ $(BUILD_DIR)/query_executor_test.o: tests/db/query_executor_test.cpp include/db/
 $(QUERY_TEST_BIN): $(QUERY_OBJS)
 	$(CXX) $(CXXFLAGS) $(QUERY_OBJS) -o $@
 
+$(BUILD_DIR)/wal.o: src/db/wal/wal.cpp include/db/wal.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/wal_test.o: tests/db/wal_test.cpp include/db/wal.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(WAL_TEST_BIN): $(WAL_OBJS)
+	$(CXX) $(CXXFLAGS) $(WAL_OBJS) -o $@
+
+$(BUILD_DIR)/database.o: src/db/database/database.cpp include/db/database.h include/db/wal.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/db/query_executor.h include/db/catalog.h include/db/heap_table.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/recovery_test.o: tests/db/recovery_test.cpp include/db/database.h include/db/wal.h include/db/buffer_pool.h include/db/query_executor.h include/db/catalog.h include/db/heap_table.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(RECOVERY_TEST_BIN): $(RECOVERY_OBJS)
+	$(CXX) $(CXXFLAGS) $(RECOVERY_OBJS) -o $@
+
 $(BUILD_DIR)/buffer_pool.o: src/db/buffer/buffer_pool.cpp include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/error.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -458,7 +495,7 @@ $(BUILD_DIR)/mem_enforce_test.o: tests/container/mem_enforce_test.c include/cont
 $(MEM_ENFORCE_BIN): $(MEM_ENFORCE_OBJS) $(MEM_WORKLOAD_BIN)
 	$(CC) $(CFLAGS) $(MEM_ENFORCE_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(PROCESS_TEST_BIN)
@@ -468,6 +505,8 @@ test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TES
 	$(HEAP_TEST_BIN)
 	$(CATALOG_TEST_BIN)
 	$(QUERY_TEST_BIN)
+	$(WAL_TEST_BIN)
+	$(RECOVERY_TEST_BIN)
 	$(BUFFER_TEST_BIN)
 	$(CONTAINER_DEMO_BIN)
 	$(ENG_TEST_BIN)
