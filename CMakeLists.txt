@@ -61,6 +61,18 @@ add_executable(nexus_process_test
   tests/container/process_test.c
 )
 
+# Bridge milestone: isolated memory-telemetry relay test (Ayush). Read-only
+# relay of cgroup v2 memory telemetry through container_metrics(); no limit
+# writes, no policy actions. Reuses the container cgroup controller + runtime.
+add_executable(nexus_memory_bridge_test
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  src/bridge/memory_bridge.c
+  tests/bridge/test_memory_bridge.c
+)
+
 # P2: Linux namespace integration test. Isolation checks are inode-based
 # (/proc/<pid>/ns) and require CAP_SYS_ADMIN; when unavailable they are reported
 # ENV-LIMITED rather than passed. The denial/failure path is always asserted.
@@ -430,6 +442,7 @@ add_test(NAME process_exec COMMAND nexus_process_test)
 add_test(NAME namespace_isolation COMMAND nexus_namespace_test)
 add_test(NAME db_engine_binary COMMAND nexus_db_engine_test)
 add_test(NAME bridge_resource_monitor COMMAND nexus_bridge_test)
+add_test(NAME memory_bridge COMMAND nexus_memory_bridge_test)
 add_test(NAME bridge_adaptation_policy COMMAND nexus_policy_test)
 add_test(NAME dashboard_metrics COMMAND nexus_dashboard_test)
 add_test(NAME dashboard_demo COMMAND nexus_dashboard_demo)

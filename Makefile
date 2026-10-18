@@ -44,6 +44,9 @@ CGROUP_TEST_BIN := $(BUILD_DIR)/nexus_cgroup_test$(EXE)
 # P0: direct process-execution API test (POSIX; Windows reports ENOSYS).
 PROCESS_TEST_BIN := $(BUILD_DIR)/nexus_process_test$(EXE)
 
+# Bridge milestone: isolated memory-telemetry relay test (Ayush, read-only).
+MEMORY_BRIDGE_TEST_BIN := $(BUILD_DIR)/nexus_memory_bridge_test$(EXE)
+
 SRCS := src/container/container.c \
         src/container/cgroup.c \
         src/container/namespace.c \
@@ -71,6 +74,15 @@ CGROUP_OBJS := $(BUILD_DIR)/cgroup.o \
 
 PROCESS_OBJS := $(BUILD_DIR)/process.o \
                 $(BUILD_DIR)/process_test.o
+
+# Bridge milestone (Ayush): memory-telemetry relay, read-only, C11.
+# Reuses the container runtime + cgroup controller, so those objects are linked.
+MEMORY_BRIDGE_OBJS := $(BUILD_DIR)/container.o \
+                      $(BUILD_DIR)/cgroup.o \
+                      $(BUILD_DIR)/namespace.o \
+                      $(BUILD_DIR)/process.o \
+                      $(BUILD_DIR)/memory_bridge.o \
+                      $(BUILD_DIR)/test_memory_bridge.o
 
 # P2: Linux namespace integration test (env-limited when unprivileged).
 NS_TEST_BIN := $(BUILD_DIR)/nexus_namespace_test$(EXE)
@@ -296,7 +308,7 @@ BENCH_ENGINE_OBJS := $(BUILD_DIR)/harness.o \
                      $(BUILD_DIR)/buffer_pool.o \
                      $(BUILD_DIR)/benchmark_main_engine.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -340,6 +352,15 @@ $(BUILD_DIR)/process_test.o: tests/container/process_test.c include/container/pr
 
 $(PROCESS_TEST_BIN): $(PROCESS_OBJS)
 	$(CC) $(CFLAGS) $(PROCESS_OBJS) -o $@
+
+$(BUILD_DIR)/memory_bridge.o: src/bridge/memory_bridge.c include/bridge/memory_bridge.h include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/test_memory_bridge.o: tests/bridge/test_memory_bridge.c include/bridge/memory_bridge.h include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(MEMORY_BRIDGE_TEST_BIN): $(MEMORY_BRIDGE_OBJS)
+	$(CC) $(CFLAGS) $(MEMORY_BRIDGE_OBJS) -o $@
 
 $(BUILD_DIR)/namespace_test.o: tests/container/namespace_test.c include/container/namespace.h include/container/process.h include/container/container.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -570,10 +591,11 @@ $(BUILD_DIR)/mem_enforce_test.o: tests/container/mem_enforce_test.c include/cont
 $(MEM_ENFORCE_BIN): $(MEM_ENFORCE_OBJS) $(MEM_WORKLOAD_BIN)
 	$(CC) $(CFLAGS) $(MEM_ENFORCE_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(PROCESS_TEST_BIN)
+	$(MEMORY_BRIDGE_TEST_BIN)
 	$(NS_TEST_BIN)
 	$(DB_TEST_BIN)
 	$(SLOTTED_TEST_BIN)
