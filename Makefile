@@ -141,6 +141,40 @@ RECOVERY_OBJS := $(BUILD_DIR)/page.o \
                  $(BUILD_DIR)/database.o \
                  $(BUILD_DIR)/recovery_test.o
 
+# R3 Manager/Router + CLI (Digvijay): coordinates the container runtime and the
+# database engine; the CLI is the end-to-end entry point, C++17.
+DB_STACK_OBJS := $(BUILD_DIR)/page.o \
+                 $(BUILD_DIR)/page_storage.o \
+                 $(BUILD_DIR)/buffer_pool.o \
+                 $(BUILD_DIR)/slotted_page.o \
+                 $(BUILD_DIR)/heap_table.o \
+                 $(BUILD_DIR)/catalog.o \
+                 $(BUILD_DIR)/query_executor.o \
+                 $(BUILD_DIR)/wal.o \
+                 $(BUILD_DIR)/database.o
+
+CONTAINER_STACK_OBJS := $(BUILD_DIR)/container.o \
+                        $(BUILD_DIR)/cgroup.o \
+                        $(BUILD_DIR)/namespace.o \
+                        $(BUILD_DIR)/process.o
+
+MANAGER_OBJS := $(BUILD_DIR)/manager.o \
+                $(BUILD_DIR)/router.o
+
+CLI_BIN := $(BUILD_DIR)/nexusdb_cli$(EXE)
+CLI_OBJS := $(DB_STACK_OBJS) $(MANAGER_OBJS) $(CONTAINER_STACK_OBJS) \
+            $(BUILD_DIR)/nexusdb_cli.o
+
+MANAGER_TEST_BIN := $(BUILD_DIR)/manager_test$(EXE)
+MANAGER_TEST_OBJS := $(DB_STACK_OBJS) $(MANAGER_OBJS) $(CONTAINER_STACK_OBJS) \
+                     $(BUILD_DIR)/manager_test.o
+
+CLI_TEST_BIN := $(BUILD_DIR)/nexusdb_cli_test$(EXE)
+CLI_TEST_OBJS := $(BUILD_DIR)/cli_test.o
+
+# The CLI e2e test locates the built CLI via $NEXUSDB_CLI.
+export NEXUSDB_CLI := $(CLI_BIN)
+
 # Phase 2 DB buffer pool (Digvijay): BufferPool over PageStorage, C++17.
 BUFFER_TEST_BIN := $(BUILD_DIR)/buffer_pool_test$(EXE)
 BUFFER_OBJS := $(BUILD_DIR)/page.o \
@@ -251,7 +285,7 @@ BENCH_ENGINE_OBJS := $(BUILD_DIR)/harness.o \
                      $(BUILD_DIR)/buffer_pool.o \
                      $(BUILD_DIR)/benchmark_main_engine.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -450,6 +484,30 @@ $(BUILD_DIR)/recovery_test.o: tests/db/recovery_test.cpp include/db/database.h i
 $(RECOVERY_TEST_BIN): $(RECOVERY_OBJS)
 	$(CXX) $(CXXFLAGS) $(RECOVERY_OBJS) -o $@
 
+$(BUILD_DIR)/manager.o: src/manager/manager.cpp include/manager/manager.h include/db/database.h include/db/query_executor.h include/db/catalog.h include/db/heap_table.h include/db/page.h include/db/page_storage.h include/common/error.h include/container/container.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/router.o: src/manager/router.cpp include/manager/router.h include/manager/manager.h include/common/error.h include/db/page.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nexusdb_cli.o: src/cli/nexusdb_cli.cpp include/manager/manager.h include/manager/router.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/manager_test.o: tests/manager/manager_test.cpp include/manager/manager.h include/manager/router.h include/common/error.h include/db/page.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/cli_test.o: tests/cli/cli_test.cpp | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(CLI_BIN): $(CLI_OBJS)
+	$(CXX) $(CXXFLAGS) $(CLI_OBJS) -o $@
+
+$(MANAGER_TEST_BIN): $(MANAGER_TEST_OBJS)
+	$(CXX) $(CXXFLAGS) $(MANAGER_TEST_OBJS) -o $@
+
+$(CLI_TEST_BIN): $(CLI_TEST_OBJS) $(CLI_BIN) $(ENGINE_BIN)
+	$(CXX) $(CXXFLAGS) $(CLI_TEST_OBJS) -o $@
+
 $(BUILD_DIR)/buffer_pool.o: src/db/buffer/buffer_pool.cpp include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/error.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -495,7 +553,7 @@ $(BUILD_DIR)/mem_enforce_test.o: tests/container/mem_enforce_test.c include/cont
 $(MEM_ENFORCE_BIN): $(MEM_ENFORCE_OBJS) $(MEM_WORKLOAD_BIN)
 	$(CC) $(CFLAGS) $(MEM_ENFORCE_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(PROCESS_TEST_BIN)
@@ -507,7 +565,9 @@ test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TES
 	$(QUERY_TEST_BIN)
 	$(WAL_TEST_BIN)
 	$(RECOVERY_TEST_BIN)
+	$(MANAGER_TEST_BIN)
 	$(BUFFER_TEST_BIN)
+	$(CLI_TEST_BIN)
 	$(CONTAINER_DEMO_BIN)
 	$(ENG_TEST_BIN)
 	$(CPU_ENFORCE_BIN)

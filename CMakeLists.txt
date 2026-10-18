@@ -261,6 +261,56 @@ add_executable(db_engine
   src/db/engine/db_engine.cpp
 )
 
+# R3: Manager/Router coordination layer + CLI (Digvijay). The Manager routes
+# container lifecycle to the container runtime and database operations through
+# Database/QueryExecutor; the Router validates argv and dispatches; `nexusdb_cli`
+# is the thin front end. The CLI links both stacks.
+add_executable(nexusdb_cli
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  src/db/query/query_executor.cpp
+  src/db/wal/wal.cpp
+  src/db/database/database.cpp
+  src/manager/manager.cpp
+  src/manager/router.cpp
+  src/cli/nexusdb_cli.cpp
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+)
+
+# R3: Manager/Router unit + integration test (isolated temp data dir).
+add_executable(manager_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  src/db/query/query_executor.cpp
+  src/db/wal/wal.cpp
+  src/db/database/database.cpp
+  src/manager/manager.cpp
+  src/manager/router.cpp
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  tests/manager/manager_test.cpp
+)
+
+# R3: CLI end-to-end test. Drives the real CLI executable; needs the CLI binary
+# and the db_engine workload available at run time.
+add_executable(nexusdb_cli_test
+  tests/cli/cli_test.cpp
+)
+add_dependencies(nexusdb_cli_test nexusdb_cli db_engine)
+
 # P3: contract test for the db_engine executable, driven via the direct-exec
 # API (POSIX). On Windows process_spawn_exec is ENOSYS, so it reports
 # ENV-LIMITED.
@@ -374,11 +424,17 @@ add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)
 add_test(NAME nexusdb_engine_demo COMMAND nexusdb_engine_demo)
 add_test(NAME cpu_enforcement COMMAND nexus_cpu_enforce_test)
 add_test(NAME memory_enforcement COMMAND nexus_mem_enforce_test)
+add_test(NAME manager COMMAND manager_test)
+add_test(NAME cli COMMAND nexusdb_cli_test)
 
 # Point the container and engine-contract tests at the freshly built engine so
 # their configured-engine checks run for real (instead of ENV-LIMITED).
 set_tests_properties(container_lifecycle db_engine_binary PROPERTIES
   ENVIRONMENT "NEXUSDB_DB_ENGINE=$<TARGET_FILE:db_engine>")
+
+# Point the CLI end-to-end test at the freshly built CLI + engine binaries.
+set_tests_properties(cli PROPERTIES
+  ENVIRONMENT "NEXUSDB_CLI=$<TARGET_FILE:nexusdb_cli>;NEXUSDB_DB_ENGINE=$<TARGET_FILE:db_engine>")
 
 # Point the P4 enforcement tests at their freshly built workload helpers.
 set_tests_properties(cpu_enforcement PROPERTIES

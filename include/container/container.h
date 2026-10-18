@@ -125,6 +125,37 @@ int container_create_ex(const char *name,
                         const char *db_engine,
                         const nexus_namespace_config_t *namespaces);
 
+/*
+ * Restore a container record from persisted metadata (R3 Manager/CLI).
+ *
+ * The registry is process-local, so a CLI invocation that runs as its own
+ * process cannot see containers created by an earlier invocation. container_adopt
+ * rebuilds a registry slot from a record the caller persisted to disk so that
+ * lifecycle operations (status/stop/delete) can still be routed THROUGH this
+ * runtime instead of being reimplemented. It is strictly additive:
+ *
+ *   - it does NOT provision or touch the cgroup filesystem,
+ *   - it does NOT spawn, stop, or signal any process,
+ *   - it only records name/id/limits/engine/cgroup_path/pid/state.
+ *
+ * Intended order: adopt FIRST, then call the normal lifecycle function. A
+ * subsequent container_start() re-spawns the workload from the persisted config,
+ * and container_stop()/container_delete() act on the recorded pid/cgroup.
+ *
+ * `state` is a nexus_state_t value (0..3); `pid` is the last recorded child pid
+ * or -1. Overwrites an existing live slot with the same name (rehydration is
+ * idempotent) or claims a free slot. Returns NEXUS_OK, NEXUS_ERR_INVALID for a
+ * bad name/state, or NEXUS_ERR_NOMEM when the registry is full.
+ */
+int container_adopt(const char *name,
+                    const char *id,
+                    unsigned long memory_bytes,
+                    unsigned int cpu_percent,
+                    const char *db_engine,
+                    const char *cgroup_path,
+                    long pid,
+                    int state);
+
 /* Start the container: spawns the workload (the configured db_engine, else the
  * placeholder) GATED (blocked before exec) in the configured namespaces,
  * attaches it to the container's cgroup, then releases it to execute, moving

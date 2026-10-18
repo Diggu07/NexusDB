@@ -187,6 +187,53 @@ int container_create_ex(const char *name,
     return NEXUS_OK;
 }
 
+int container_adopt(const char *name,
+                    const char *id,
+                    unsigned long memory_bytes,
+                    unsigned int cpu_percent,
+                    const char *db_engine,
+                    const char *cgroup_path,
+                    long pid,
+                    int state)
+{
+    slot_t *dup, *s;
+
+    if (!name_valid(name))
+        return NEXUS_ERR_INVALID;
+    if (cpu_percent > 100)
+        return NEXUS_ERR_INVALID;
+    if (state < NEXUS_CREATED || state > NEXUS_DELETED)
+        return NEXUS_ERR_INVALID;
+    if (id != NULL && strlen(id) >= NEXUS_ID_MAX)
+        return NEXUS_ERR_INVALID;
+    if (db_engine != NULL && strlen(db_engine) >= NEXUS_PATH_MAX)
+        return NEXUS_ERR_INVALID;
+    if (cgroup_path != NULL && strlen(cgroup_path) >= NEXUS_PATH_MAX)
+        return NEXUS_ERR_INVALID;
+
+    dup = find_slot(name);
+    s = (dup != NULL) ? dup : free_slot();
+    if (s == NULL)
+        return NEXUS_ERR_NOMEM;
+
+    /* Restore verbatim. Unlike create(), nothing is provisioned or spawned. */
+    memset(s, 0, sizeof(*s));
+    s->in_use = 1;
+    snprintf(s->c.name, sizeof(s->c.name), "%s", name);
+    if (id != NULL)
+        snprintf(s->c.id, sizeof(s->c.id), "%s", id);
+    s->c.state = (nexus_state_t)state;
+    s->c.pid = pid;
+    s->c.memory_bytes = memory_bytes;
+    s->c.cpu_percent = cpu_percent;
+    if (cgroup_path != NULL)
+        snprintf(s->c.cgroup_path, sizeof(s->c.cgroup_path), "%s", cgroup_path);
+    if (db_engine != NULL)
+        snprintf(s->c.db_engine, sizeof(s->c.db_engine), "%s", db_engine);
+    s->c.created_at = (long)time(NULL);
+    return NEXUS_OK;
+}
+
 /* 1 if the record requests any Linux namespace isolation. */
 static int container_ns_requested(const nexus_container_t *c)
 {
