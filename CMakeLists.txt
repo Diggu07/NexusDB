@@ -65,6 +65,20 @@ add_executable(nexus_bridge_test
   tests/bridge/resource_monitor_test.c
 )
 
+# Phase 2: memory-pressure adaptation policy (Rehan). Pure C policy + unit test
+# with a fake resize sink (no database or root required).
+add_executable(nexus_policy_test
+  src/bridge/adaptation_policy.c
+  tests/bridge/adaptation_policy_test.c
+)
+
+# Phase 2: C++ adapter that routes policy resize requests through the engine's
+# public BufferPool API. Built as a static library so it is type-checked
+# against the engine without forcing a link here.
+add_library(nexus_bridge_adapter STATIC
+  src/bridge/buffer_pool_adapter.cpp
+)
+
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
 add_executable(db_storage_test
   src/db/storage/page.cpp
@@ -104,6 +118,7 @@ add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME container_engine_demo COMMAND container_engine_demo)
 add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
 add_test(NAME bridge_resource_monitor COMMAND nexus_bridge_test)
+add_test(NAME bridge_adaptation_policy COMMAND nexus_policy_test)
 add_test(NAME db_storage COMMAND db_storage_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)

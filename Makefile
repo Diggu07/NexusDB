@@ -87,7 +87,13 @@ BRIDGE_OBJS := $(BUILD_DIR)/resource_monitor.o \
                $(BUILD_DIR)/process.o \
                $(BUILD_DIR)/bridge_test.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN)
+# Phase 2 OS-DB Bridge (Rehan): memory-pressure adaptation policy, C11.
+# Pure policy; the test builds snapshots directly, so no container objects.
+POLICY_TEST_BIN := $(BUILD_DIR)/nexus_policy_test$(EXE)
+POLICY_OBJS := $(BUILD_DIR)/adaptation_policy.o \
+               $(BUILD_DIR)/policy_test.o
+
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -135,6 +141,23 @@ $(BUILD_DIR)/bridge_test.o: tests/bridge/resource_monitor_test.c include/bridge/
 $(BRIDGE_TEST_BIN): $(BRIDGE_OBJS)
 	$(CC) $(CFLAGS) $(BRIDGE_OBJS) -o $@
 
+$(BUILD_DIR)/adaptation_policy.o: src/bridge/adaptation_policy.c include/bridge/adaptation_policy.h include/bridge/resource_monitor.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/policy_test.o: tests/bridge/adaptation_policy_test.c include/bridge/adaptation_policy.h include/bridge/resource_monitor.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(POLICY_TEST_BIN): $(POLICY_OBJS)
+	$(CC) $(CFLAGS) $(POLICY_OBJS) -o $@
+
+# Phase 2 C++ integration adapter. Compile-checked here; it links on the DB
+# engine side, which needs GCC 11+ (unavailable on this dev machine). Kept out
+# of 'all'/'test' because it has no standalone executable.
+$(BUILD_DIR)/buffer_pool_adapter.o: src/bridge/buffer_pool_adapter.cpp include/bridge/buffer_pool_adapter.h include/bridge/adaptation_policy.h include/db/buffer_pool.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+adapter: $(BUILD_DIR)/buffer_pool_adapter.o
+
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -156,13 +179,14 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(DB_TEST_BIN)
 	$(BUFFER_TEST_BIN)
 	$(CONTAINER_DEMO_BIN)
 	$(BRIDGE_TEST_BIN)
+	$(POLICY_TEST_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)
@@ -171,4 +195,4 @@ else
 	rm -rf $(BUILD_DIR)
 endif
 
-.PHONY: all test clean
+.PHONY: all test clean adapter
