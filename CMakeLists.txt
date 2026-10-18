@@ -54,6 +54,17 @@ add_executable(nexus_cgroup_test
   tests/container/cgroup_test.c
 )
 
+# Phase 1: OS-DB Bridge resource monitoring (Rehan). Reuses the container
+# cgroup controller + runtime to read real cgroup v2 statistics and exposes
+# explicit per-field availability (no fabricated values).
+add_executable(nexus_bridge_test
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/process.c
+  tests/bridge/resource_monitor_test.c
+)
+
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
 add_executable(db_storage_test
   src/db/storage/page.cpp
@@ -92,6 +103,7 @@ enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME container_engine_demo COMMAND container_engine_demo)
 add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
+add_test(NAME bridge_resource_monitor COMMAND nexus_bridge_test)
 add_test(NAME db_storage COMMAND db_storage_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)

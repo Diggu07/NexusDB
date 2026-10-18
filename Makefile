@@ -78,7 +78,16 @@ BUFFER_OBJS := $(BUILD_DIR)/page.o \
                $(BUILD_DIR)/buffer_pool.o \
                $(BUILD_DIR)/buffer_pool_test.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
+# Phase 1 OS-DB Bridge (Rehan): cgroup v2 resource monitoring, C11.
+# Reuses the container cgroup controller + runtime, so those objects are linked.
+BRIDGE_TEST_BIN := $(BUILD_DIR)/nexus_bridge_test$(EXE)
+BRIDGE_OBJS := $(BUILD_DIR)/resource_monitor.o \
+               $(BUILD_DIR)/container.o \
+               $(BUILD_DIR)/cgroup.o \
+               $(BUILD_DIR)/process.o \
+               $(BUILD_DIR)/bridge_test.o
+
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -117,6 +126,15 @@ $(BUILD_DIR)/cgroup_test.o: tests/container/cgroup_test.c include/container/cgro
 $(CGROUP_TEST_BIN): $(CGROUP_OBJS)
 	$(CC) $(CFLAGS) $(CGROUP_OBJS) -o $@
 
+$(BUILD_DIR)/resource_monitor.o: src/bridge/resource_monitor.c include/bridge/resource_monitor.h include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/bridge_test.o: tests/bridge/resource_monitor_test.c include/bridge/resource_monitor.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BRIDGE_TEST_BIN): $(BRIDGE_OBJS)
+	$(CC) $(CFLAGS) $(BRIDGE_OBJS) -o $@
+
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -138,12 +156,13 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(DB_TEST_BIN)
 	$(BUFFER_TEST_BIN)
 	$(CONTAINER_DEMO_BIN)
+	$(BRIDGE_TEST_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)
