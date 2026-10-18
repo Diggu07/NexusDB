@@ -110,7 +110,39 @@ DASH_DEMO_OBJS := $(BUILD_DIR)/dash_metrics.o \
                   $(BUILD_DIR)/cgroup.o \
                   $(BUILD_DIR)/process.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN)
+# Phase 4 Benchmark harness (Rehan): C11 orchestration + a portable CLI stub.
+# The engine-backed benchmark ('make benchmark', Linux/GCC 11+) links the DB
+# engine; the stub compiles everywhere and refuses to run without it.
+HARNESS_TEST_BIN := $(BUILD_DIR)/nexus_benchmark_harness_test$(EXE)
+HARNESS_TEST_OBJS := $(BUILD_DIR)/harness.o \
+                     $(BUILD_DIR)/adaptation_policy.o \
+                     $(BUILD_DIR)/resource_monitor.o \
+                     $(BUILD_DIR)/container.o \
+                     $(BUILD_DIR)/cgroup.o \
+                     $(BUILD_DIR)/process.o \
+                     $(BUILD_DIR)/harness_test.o
+BENCH_STUB_BIN := $(BUILD_DIR)/nexus_benchmark_stub$(EXE)
+BENCH_STUB_OBJS := $(BUILD_DIR)/harness.o \
+                   $(BUILD_DIR)/adaptation_policy.o \
+                   $(BUILD_DIR)/resource_monitor.o \
+                   $(BUILD_DIR)/container.o \
+                   $(BUILD_DIR)/cgroup.o \
+                   $(BUILD_DIR)/process.o \
+                   $(BUILD_DIR)/benchmark_main.o
+BENCH_ENGINE_OBJS := $(BUILD_DIR)/harness.o \
+                     $(BUILD_DIR)/adaptation_policy.o \
+                     $(BUILD_DIR)/resource_monitor.o \
+                     $(BUILD_DIR)/container.o \
+                     $(BUILD_DIR)/cgroup.o \
+                     $(BUILD_DIR)/process.o \
+                     $(BUILD_DIR)/engine_workload.o \
+                     $(BUILD_DIR)/buffer_pool_adapter.o \
+                     $(BUILD_DIR)/page.o \
+                     $(BUILD_DIR)/page_storage.o \
+                     $(BUILD_DIR)/buffer_pool.o \
+                     $(BUILD_DIR)/benchmark_main_engine.o
+
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -197,6 +229,32 @@ $(BUILD_DIR)/dashboard_ncurses.o: src/dashboard/dashboard_ncurses.c include/dash
 dashboard-ncurses: $(BUILD_DIR)/dashboard_ncurses.o $(BUILD_DIR)/dashboard_demo_nc.o $(BUILD_DIR)/dash_metrics.o $(BUILD_DIR)/dashboard_text.o $(BUILD_DIR)/resource_monitor.o $(BUILD_DIR)/adaptation_policy.o $(BUILD_DIR)/container.o $(BUILD_DIR)/cgroup.o $(BUILD_DIR)/process.o
 	$(CC) $(CFLAGS) $(BUILD_DIR)/dashboard_ncurses.o $(BUILD_DIR)/dashboard_demo_nc.o $(BUILD_DIR)/dash_metrics.o $(BUILD_DIR)/dashboard_text.o $(BUILD_DIR)/resource_monitor.o $(BUILD_DIR)/adaptation_policy.o $(BUILD_DIR)/container.o $(BUILD_DIR)/cgroup.o $(BUILD_DIR)/process.o -o $(BUILD_DIR)/nexus_dashboard$(EXE) -lncurses
 
+# Phase 4 Benchmark harness (Rehan). 'benchmark' (engine-backed) is Linux-only;
+# harness_test and the stub build everywhere and are part of all/test.
+$(BUILD_DIR)/harness.o: src/benchmark/harness.c include/benchmark/harness.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/harness_test.o: tests/benchmark/harness_test.c include/benchmark/harness.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(HARNESS_TEST_BIN): $(HARNESS_TEST_OBJS)
+	$(CC) $(CFLAGS) $(HARNESS_TEST_OBJS) -o $@
+
+$(BUILD_DIR)/benchmark_main.o: benchmarks/nexus_benchmark.c include/benchmark/harness.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BENCH_STUB_BIN): $(BENCH_STUB_OBJS)
+	$(CC) $(CFLAGS) $(BENCH_STUB_OBJS) -o $@
+
+$(BUILD_DIR)/benchmark_main_engine.o: benchmarks/nexus_benchmark.c include/benchmark/harness.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DNEXUS_HAVE_DB_ENGINE -c $< -o $@
+
+$(BUILD_DIR)/engine_workload.o: src/benchmark/engine_workload.cpp include/benchmark/harness.h include/bridge/buffer_pool_adapter.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+benchmark: $(BENCH_ENGINE_OBJS)
+	$(CXX) $(CXXFLAGS) $(BENCH_ENGINE_OBJS) -o $(BUILD_DIR)/nexus_benchmark$(EXE)
+
 # Phase 2 C++ integration adapter. Compile-checked here; it links on the DB
 # engine side, which needs GCC 11+ (unavailable on this dev machine). Kept out
 # of 'all'/'test' because it has no standalone executable.
@@ -226,7 +284,7 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(DB_TEST_BIN)
@@ -236,6 +294,7 @@ test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAIN
 	$(POLICY_TEST_BIN)
 	$(DASH_TEST_BIN)
 	$(DASH_DEMO_BIN)
+	$(HARNESS_TEST_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)
@@ -244,4 +303,4 @@ else
 	rm -rf $(BUILD_DIR)
 endif
 
-.PHONY: all test clean adapter dashboard-ncurses
+.PHONY: all test clean adapter dashboard-ncurses benchmark

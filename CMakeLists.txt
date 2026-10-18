@@ -152,6 +152,45 @@ add_executable(nexusdb_engine_demo
   examples/db/nexusdb_engine_demo.cpp
 )
 
+# Phase 4: benchmark harness (Rehan). The C orchestrator builds everywhere along
+# with a portable CLI stub; the engine-backed 'nexus_benchmark' links the real
+# DB engine (Linux, GCC 11+) and defines NEXUS_HAVE_DB_ENGINE.
+add_executable(nexus_benchmark_harness_test
+  src/benchmark/harness.c
+  src/bridge/adaptation_policy.c
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/process.c
+  tests/benchmark/harness_test.c
+)
+
+add_executable(nexus_benchmark_stub
+  src/benchmark/harness.c
+  src/bridge/adaptation_policy.c
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/process.c
+  benchmarks/nexus_benchmark.c
+)
+
+add_executable(nexus_benchmark
+  src/benchmark/harness.c
+  src/bridge/adaptation_policy.c
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/process.c
+  src/benchmark/engine_workload.cpp
+  src/bridge/buffer_pool_adapter.cpp
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  benchmarks/nexus_benchmark.c
+)
+target_compile_definitions(nexus_benchmark PRIVATE NEXUS_HAVE_DB_ENGINE)
+
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME container_engine_demo COMMAND container_engine_demo)
@@ -160,6 +199,7 @@ add_test(NAME bridge_resource_monitor COMMAND nexus_bridge_test)
 add_test(NAME bridge_adaptation_policy COMMAND nexus_policy_test)
 add_test(NAME dashboard_metrics COMMAND nexus_dashboard_test)
 add_test(NAME dashboard_demo COMMAND nexus_dashboard_demo)
+add_test(NAME benchmark_harness COMMAND nexus_benchmark_harness_test)
 add_test(NAME db_storage COMMAND db_storage_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)
