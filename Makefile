@@ -93,7 +93,24 @@ POLICY_TEST_BIN := $(BUILD_DIR)/nexus_policy_test$(EXE)
 POLICY_OBJS := $(BUILD_DIR)/adaptation_policy.o \
                $(BUILD_DIR)/policy_test.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN)
+# Phase 3 Live Dashboard (Rehan): metrics + plain-text renderer, C11.
+# The plain build needs no ncurses; the ncurses UI is a separate opt-in target.
+DASH_TEST_BIN := $(BUILD_DIR)/nexus_dashboard_test$(EXE)
+DASH_OBJS := $(BUILD_DIR)/dash_metrics.o \
+             $(BUILD_DIR)/dashboard_text.o \
+             $(BUILD_DIR)/adaptation_policy.o \
+             $(BUILD_DIR)/dashboard_test.o
+DASH_DEMO_BIN := $(BUILD_DIR)/nexus_dashboard_demo$(EXE)
+DASH_DEMO_OBJS := $(BUILD_DIR)/dash_metrics.o \
+                  $(BUILD_DIR)/dashboard_text.o \
+                  $(BUILD_DIR)/dashboard_demo.o \
+                  $(BUILD_DIR)/resource_monitor.o \
+                  $(BUILD_DIR)/adaptation_policy.o \
+                  $(BUILD_DIR)/container.o \
+                  $(BUILD_DIR)/cgroup.o \
+                  $(BUILD_DIR)/process.o
+
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -150,6 +167,36 @@ $(BUILD_DIR)/policy_test.o: tests/bridge/adaptation_policy_test.c include/bridge
 $(POLICY_TEST_BIN): $(POLICY_OBJS)
 	$(CC) $(CFLAGS) $(POLICY_OBJS) -o $@
 
+$(BUILD_DIR)/dash_metrics.o: src/dashboard/metrics.c include/dashboard/metrics.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/dashboard_text.o: src/dashboard/dashboard_text.c include/dashboard/dashboard.h include/dashboard/metrics.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/dashboard_test.o: tests/dashboard/dashboard_test.c include/dashboard/dashboard.h include/dashboard/metrics.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(DASH_TEST_BIN): $(DASH_OBJS)
+	$(CC) $(CFLAGS) $(DASH_OBJS) -o $@
+
+$(BUILD_DIR)/dashboard_demo.o: examples/dashboard/dashboard_demo.c include/dashboard/dashboard.h include/dashboard/metrics.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(DASH_DEMO_BIN): $(DASH_DEMO_OBJS)
+	$(CC) $(CFLAGS) $(DASH_DEMO_OBJS) -o $@
+
+# Optional live ncurses UI (Linux/WSL2 + libncurses-dev). Kept out of
+# all/test: the default build works without ncurses. Requires the demo and the
+# ncurses renderer compiled with -DNEXUS_HAVE_NCURSES.
+$(BUILD_DIR)/dashboard_demo_nc.o: examples/dashboard/dashboard_demo.c include/dashboard/dashboard.h include/dashboard/metrics.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h include/container/container.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DNEXUS_HAVE_NCURSES -c $< -o $@
+
+$(BUILD_DIR)/dashboard_ncurses.o: src/dashboard/dashboard_ncurses.c include/dashboard/dashboard.h include/dashboard/metrics.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DNEXUS_HAVE_NCURSES -c $< -o $@
+
+dashboard-ncurses: $(BUILD_DIR)/dashboard_ncurses.o $(BUILD_DIR)/dashboard_demo_nc.o $(BUILD_DIR)/dash_metrics.o $(BUILD_DIR)/dashboard_text.o $(BUILD_DIR)/resource_monitor.o $(BUILD_DIR)/adaptation_policy.o $(BUILD_DIR)/container.o $(BUILD_DIR)/cgroup.o $(BUILD_DIR)/process.o
+	$(CC) $(CFLAGS) $(BUILD_DIR)/dashboard_ncurses.o $(BUILD_DIR)/dashboard_demo_nc.o $(BUILD_DIR)/dash_metrics.o $(BUILD_DIR)/dashboard_text.o $(BUILD_DIR)/resource_monitor.o $(BUILD_DIR)/adaptation_policy.o $(BUILD_DIR)/container.o $(BUILD_DIR)/cgroup.o $(BUILD_DIR)/process.o -o $(BUILD_DIR)/nexus_dashboard$(EXE) -lncurses
+
 # Phase 2 C++ integration adapter. Compile-checked here; it links on the DB
 # engine side, which needs GCC 11+ (unavailable on this dev machine). Kept out
 # of 'all'/'test' because it has no standalone executable.
@@ -179,7 +226,7 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(DB_TEST_BIN)
@@ -187,6 +234,8 @@ test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAIN
 	$(CONTAINER_DEMO_BIN)
 	$(BRIDGE_TEST_BIN)
 	$(POLICY_TEST_BIN)
+	$(DASH_TEST_BIN)
+	$(DASH_DEMO_BIN)
 
 clean:
 ifeq ($(OS),Windows_NT)
@@ -195,4 +244,4 @@ else
 	rm -rf $(BUILD_DIR)
 endif
 
-.PHONY: all test clean adapter
+.PHONY: all test clean adapter dashboard-ncurses

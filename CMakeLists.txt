@@ -79,6 +79,45 @@ add_library(nexus_bridge_adapter STATIC
   src/bridge/buffer_pool_adapter.cpp
 )
 
+# Phase 3: live dashboard metrics core + plain-text renderer (Rehan). The
+# default build needs no ncurses; Unicode/terminal concerns live in the UI.
+add_executable(nexus_dashboard_test
+  src/dashboard/metrics.c
+  src/dashboard/dashboard_text.c
+  src/bridge/adaptation_policy.c
+  tests/dashboard/dashboard_test.c
+)
+
+add_executable(nexus_dashboard_demo
+  src/dashboard/metrics.c
+  src/dashboard/dashboard_text.c
+  src/bridge/resource_monitor.c
+  src/bridge/adaptation_policy.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/process.c
+  examples/dashboard/dashboard_demo.c
+)
+
+# Optional live ncurses UI: built only when Curses is found (Linux/WSL2).
+find_package(Curses)
+if(CURSES_FOUND)
+  add_executable(nexus_dashboard
+    src/dashboard/metrics.c
+    src/dashboard/dashboard_text.c
+    src/dashboard/dashboard_ncurses.c
+    src/bridge/resource_monitor.c
+    src/bridge/adaptation_policy.c
+    src/container/container.c
+    src/container/cgroup.c
+    src/container/process.c
+    examples/dashboard/dashboard_demo.c
+  )
+  target_compile_definitions(nexus_dashboard PRIVATE NEXUS_HAVE_NCURSES)
+  target_include_directories(nexus_dashboard PRIVATE ${CURSES_INCLUDE_DIRS})
+  target_link_libraries(nexus_dashboard PRIVATE ${CURSES_LIBRARIES})
+endif()
+
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
 add_executable(db_storage_test
   src/db/storage/page.cpp
@@ -119,6 +158,8 @@ add_test(NAME container_engine_demo COMMAND container_engine_demo)
 add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
 add_test(NAME bridge_resource_monitor COMMAND nexus_bridge_test)
 add_test(NAME bridge_adaptation_policy COMMAND nexus_policy_test)
+add_test(NAME dashboard_metrics COMMAND nexus_dashboard_test)
+add_test(NAME dashboard_demo COMMAND nexus_dashboard_demo)
 add_test(NAME db_storage COMMAND db_storage_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)
