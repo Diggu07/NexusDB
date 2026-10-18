@@ -50,6 +50,16 @@ add_executable(nexus_process_test
   tests/container/process_test.c
 )
 
+# Bridge milestone: isolated memory-telemetry relay test.
+add_executable(nexus_memory_bridge_test
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  src/bridge/memory_bridge.c
+  tests/bridge/test_memory_bridge.c
+)
+
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
 add_executable(db_storage_test
   src/db/storage/page.cpp
@@ -61,4 +71,5 @@ enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
 add_test(NAME process_launch COMMAND nexus_process_test)
+add_test(NAME memory_bridge COMMAND nexus_memory_bridge_test)
 add_test(NAME db_storage COMMAND db_storage_test)

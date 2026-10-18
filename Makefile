@@ -41,6 +41,9 @@ CGROUP_TEST_BIN := $(BUILD_DIR)/nexus_cgroup_test$(EXE)
 # Part 2: real process-launch test (configured exe, self-attach, namespaces).
 PROCESS_TEST_BIN := $(BUILD_DIR)/nexus_process_test$(EXE)
 
+# Bridge milestone: isolated memory-telemetry relay test (no sudo, NEXUS_CGROUP_ROOT).
+MEMORY_BRIDGE_TEST_BIN := $(BUILD_DIR)/nexus_memory_bridge_test$(EXE)
+
 SRCS := src/container/container.c \
         src/container/cgroup.c \
         src/container/namespace.c \
@@ -62,13 +65,20 @@ PROCESS_OBJS := $(BUILD_DIR)/container.o \
                 $(BUILD_DIR)/process.o \
                 $(BUILD_DIR)/process_test.o
 
+MEMORY_BRIDGE_OBJS := $(BUILD_DIR)/container.o \
+                      $(BUILD_DIR)/cgroup.o \
+                      $(BUILD_DIR)/namespace.o \
+                      $(BUILD_DIR)/process.o \
+                      $(BUILD_DIR)/memory_bridge.o \
+                      $(BUILD_DIR)/test_memory_bridge.o
+
 # Phase 1 DB storage (Digvijay): Page + PageStorage, C++17.
 DB_TEST_BIN := $(BUILD_DIR)/db_storage_test$(EXE)
 DB_OBJS := $(BUILD_DIR)/page.o \
            $(BUILD_DIR)/page_storage.o \
            $(BUILD_DIR)/storage_test.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(DB_TEST_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(DB_TEST_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -107,6 +117,15 @@ $(BUILD_DIR)/process_test.o: tests/container/process_test.c include/container/co
 $(PROCESS_TEST_BIN): $(PROCESS_OBJS)
 	$(CC) $(CFLAGS) $(PROCESS_OBJS) -o $@
 
+$(BUILD_DIR)/memory_bridge.o: src/bridge/memory_bridge.c include/bridge/memory_bridge.h include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/test_memory_bridge.o: tests/bridge/test_memory_bridge.c include/bridge/memory_bridge.h include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(MEMORY_BRIDGE_TEST_BIN): $(MEMORY_BRIDGE_OBJS)
+	$(CC) $(CFLAGS) $(MEMORY_BRIDGE_OBJS) -o $@
+
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -119,10 +138,11 @@ $(BUILD_DIR)/storage_test.o: tests/db/storage_test.cpp include/db/page_storage.h
 $(DB_TEST_BIN): $(DB_OBJS)
 	$(CXX) $(CXXFLAGS) $(DB_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(DB_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(DB_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(PROCESS_TEST_BIN)
+	$(MEMORY_BRIDGE_TEST_BIN)
 	$(DB_TEST_BIN)
 
 clean:
