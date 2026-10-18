@@ -239,6 +239,17 @@ DASH_OBJS := $(BUILD_DIR)/dash_metrics.o \
              $(BUILD_DIR)/dashboard_text.o \
              $(BUILD_DIR)/adaptation_policy.o \
              $(BUILD_DIR)/dashboard_test.o
+# R4 OS-DB Bridge <-> Database engine integration test (Digvijay): the
+# production adaptation policy + resize adapter driven against a real
+# BufferPool/Database, plus dashboard engine metrics, C++17.
+ENGINE_ADAPT_TEST_BIN := $(BUILD_DIR)/engine_adaptation_test$(EXE)
+ENGINE_ADAPT_TEST_OBJS := $(BUILD_DIR)/adaptation_policy.o \
+                          $(BUILD_DIR)/buffer_pool_adapter.o \
+                          $(BUILD_DIR)/dash_metrics.o \
+                          $(BUILD_DIR)/dashboard_text.o \
+                          $(DB_STACK_OBJS) \
+                          $(BUILD_DIR)/engine_adaptation_test.o
+
 DASH_DEMO_BIN := $(BUILD_DIR)/nexus_dashboard_demo$(EXE)
 DASH_DEMO_OBJS := $(BUILD_DIR)/dash_metrics.o \
                   $(BUILD_DIR)/dashboard_text.o \
@@ -285,7 +296,7 @@ BENCH_ENGINE_OBJS := $(BUILD_DIR)/harness.o \
                      $(BUILD_DIR)/buffer_pool.o \
                      $(BUILD_DIR)/benchmark_main_engine.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -417,6 +428,12 @@ $(BUILD_DIR)/buffer_pool_adapter.o: src/bridge/buffer_pool_adapter.cpp include/b
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 adapter: $(BUILD_DIR)/buffer_pool_adapter.o
+
+$(BUILD_DIR)/engine_adaptation_test.o: tests/bridge/engine_adaptation_test.cpp include/bridge/adaptation_policy.h include/bridge/buffer_pool_adapter.h include/dashboard/dashboard.h include/dashboard/metrics.h include/db/buffer_pool.h include/db/database.h include/db/page.h include/db/page_storage.h include/db/query_executor.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(ENGINE_ADAPT_TEST_BIN): $(ENGINE_ADAPT_TEST_OBJS)
+	$(CXX) $(CXXFLAGS) $(ENGINE_ADAPT_TEST_OBJS) -o $@
 
 $(BUILD_DIR)/page.o: src/db/storage/page.cpp include/db/page.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
@@ -553,7 +570,7 @@ $(BUILD_DIR)/mem_enforce_test.o: tests/container/mem_enforce_test.c include/cont
 $(MEM_ENFORCE_BIN): $(MEM_ENFORCE_OBJS) $(MEM_WORKLOAD_BIN)
 	$(CC) $(CFLAGS) $(MEM_ENFORCE_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(PROCESS_TEST_BIN)
@@ -576,6 +593,7 @@ test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TES
 	$(POLICY_TEST_BIN)
 	$(DASH_TEST_BIN)
 	$(DASH_DEMO_BIN)
+	$(ENGINE_ADAPT_TEST_BIN)
 	$(HARNESS_TEST_BIN)
 
 clean:

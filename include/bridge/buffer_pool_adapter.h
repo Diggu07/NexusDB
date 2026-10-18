@@ -5,10 +5,12 @@
  * the database engine's PUBLIC BufferPool API. It lives on the bridge side,
  * uses only Digivijay's public interface, and changes no engine code.
  *
- * This translation unit is meant to be compiled with the C++ engine toolchain
- * (GCC 11+ / C++17). On the current dev machine the C++ engine does not build,
- * so this file is only compile-checked there, not linked; the end-to-end
- * pinned/dirty integration test runs on Linux/WSL2.
+ * This translation unit is compiled and linked with the C++ engine toolchain
+ * (GCC 11+ / C++17). It is linked into the engine-backed benchmark
+ * (nexus_benchmark) and into tests/bridge/engine_adaptation_test.cpp, which
+ * drives it against a real BufferPool/Database (resize success/failure,
+ * pinned-frame refusal, dirty-eviction WAL ordering, record survival across
+ * resize and close/reopen recovery).
  */
 #ifndef NEXUS_BRIDGE_BUFFER_POOL_ADAPTER_H
 #define NEXUS_BRIDGE_BUFFER_POOL_ADAPTER_H

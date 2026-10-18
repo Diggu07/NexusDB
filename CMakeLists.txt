@@ -400,6 +400,28 @@ add_executable(nexus_benchmark
 target_compile_definitions(nexus_benchmark PRIVATE NEXUS_HAVE_DB_ENGINE)
 add_dependencies(nexus_benchmark db_engine)
 
+# R4: OS-DB Bridge <-> Database engine integration test (Digvijay). Links the
+# real adaptation policy + resize adapter to the real engine: bridge-requested
+# resize applied to a live BufferPool (and to a live Database), pinned-frame
+# shrink refusal, dirty-eviction write-ahead ordering, record correctness across
+# resize + WAL recovery, and dashboard engine metrics from a real pool.
+add_executable(engine_adaptation_test
+  src/bridge/adaptation_policy.c
+  src/bridge/buffer_pool_adapter.cpp
+  src/dashboard/metrics.c
+  src/dashboard/dashboard_text.c
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  src/db/query/query_executor.cpp
+  src/db/wal/wal.cpp
+  src/db/database/database.cpp
+  tests/bridge/engine_adaptation_test.cpp
+)
+
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME container_engine_demo COMMAND container_engine_demo)
@@ -426,6 +448,7 @@ add_test(NAME cpu_enforcement COMMAND nexus_cpu_enforce_test)
 add_test(NAME memory_enforcement COMMAND nexus_mem_enforce_test)
 add_test(NAME manager COMMAND manager_test)
 add_test(NAME cli COMMAND nexusdb_cli_test)
+add_test(NAME engine_adaptation COMMAND engine_adaptation_test)
 
 # Point the container and engine-contract tests at the freshly built engine so
 # their configured-engine checks run for real (instead of ENV-LIMITED).
