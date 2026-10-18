@@ -70,6 +70,73 @@ add_executable(nexus_namespace_test
   tests/container/namespace_test.c
 )
 
+# Phase 1: OS-DB Bridge resource monitoring (Rehan). Reuses the container
+# cgroup controller + runtime to read real cgroup v2 statistics and exposes
+# explicit per-field availability (no fabricated values). namespace.c is linked
+# because container.c (P2) drives the gated namespaced child.
+add_executable(nexus_bridge_test
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  tests/bridge/resource_monitor_test.c
+)
+
+# Phase 2: memory-pressure adaptation policy (Rehan). Pure C policy + unit test
+# with a fake resize sink (no database or root required).
+add_executable(nexus_policy_test
+  src/bridge/adaptation_policy.c
+  tests/bridge/adaptation_policy_test.c
+)
+
+# Phase 2: C++ adapter that routes policy resize requests through the engine's
+# public BufferPool API. Built as a static library so it is type-checked
+# against the engine without forcing a link here.
+add_library(nexus_bridge_adapter STATIC
+  src/bridge/buffer_pool_adapter.cpp
+)
+
+# Phase 3: live dashboard metrics core + plain-text renderer (Rehan). The
+# default build needs no ncurses; Unicode/terminal concerns live in the UI.
+add_executable(nexus_dashboard_test
+  src/dashboard/metrics.c
+  src/dashboard/dashboard_text.c
+  src/bridge/adaptation_policy.c
+  tests/dashboard/dashboard_test.c
+)
+
+add_executable(nexus_dashboard_demo
+  src/dashboard/metrics.c
+  src/dashboard/dashboard_text.c
+  src/bridge/resource_monitor.c
+  src/bridge/adaptation_policy.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  examples/dashboard/dashboard_demo.c
+)
+
+# Optional live ncurses UI: built only when Curses is found (Linux/WSL2).
+find_package(Curses)
+if(CURSES_FOUND)
+  add_executable(nexus_dashboard
+    src/dashboard/metrics.c
+    src/dashboard/dashboard_text.c
+    src/dashboard/dashboard_ncurses.c
+    src/bridge/resource_monitor.c
+    src/bridge/adaptation_policy.c
+    src/container/container.c
+    src/container/cgroup.c
+    src/container/namespace.c
+    src/container/process.c
+    examples/dashboard/dashboard_demo.c
+  )
+  target_compile_definitions(nexus_dashboard PRIVATE NEXUS_HAVE_NCURSES)
+  target_include_directories(nexus_dashboard PRIVATE ${CURSES_INCLUDE_DIRS})
+  target_link_libraries(nexus_dashboard PRIVATE ${CURSES_LIBRARIES})
+endif()
 # Phase 1: Page + PageStorage (Digvijay, Database Engine).
 add_executable(db_storage_test
   src/db/storage/page.cpp
@@ -155,6 +222,55 @@ add_executable(nexus_mem_enforce_test
 )
 add_dependencies(nexus_mem_enforce_test nexus_mem_workload)
 
+# Phase 4: benchmark harness (Rehan). The C orchestrator builds everywhere along
+# with a portable CLI stub; the engine-backed 'nexus_benchmark' links the real
+# DB engine (Linux, GCC 11+) and defines NEXUS_HAVE_DB_ENGINE. namespace.c is
+# linked because container.c (P2) drives the gated namespaced child.
+add_executable(nexus_benchmark_harness_test
+  src/benchmark/harness.c
+  src/bridge/adaptation_policy.c
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  tests/benchmark/harness_test.c
+)
+add_dependencies(nexus_benchmark_harness_test nexus_cpu_workload nexus_mem_workload)
+
+# Portable benchmark CLI stub: builds everywhere but refuses to emit numbers
+# without the DB engine.
+add_executable(nexus_benchmark_stub
+  src/benchmark/harness.c
+  src/bridge/adaptation_policy.c
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  benchmarks/nexus_benchmark.c
+)
+
+# Engine-backed benchmark: exercises the real database executable through the
+# production adaptation adapter.
+add_executable(nexus_benchmark
+  src/benchmark/harness.c
+  src/bridge/adaptation_policy.c
+  src/bridge/resource_monitor.c
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  src/benchmark/engine_workload.cpp
+  src/bridge/buffer_pool_adapter.cpp
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  benchmarks/nexus_benchmark.c
+)
+target_compile_definitions(nexus_benchmark PRIVATE NEXUS_HAVE_DB_ENGINE)
+add_dependencies(nexus_benchmark db_engine)
+
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME container_engine_demo COMMAND container_engine_demo)
@@ -162,6 +278,11 @@ add_test(NAME cgroup_reliability COMMAND nexus_cgroup_test)
 add_test(NAME process_exec COMMAND nexus_process_test)
 add_test(NAME namespace_isolation COMMAND nexus_namespace_test)
 add_test(NAME db_engine_binary COMMAND nexus_db_engine_test)
+add_test(NAME bridge_resource_monitor COMMAND nexus_bridge_test)
+add_test(NAME bridge_adaptation_policy COMMAND nexus_policy_test)
+add_test(NAME dashboard_metrics COMMAND nexus_dashboard_test)
+add_test(NAME dashboard_demo COMMAND nexus_dashboard_demo)
+add_test(NAME benchmark_harness COMMAND nexus_benchmark_harness_test)
 add_test(NAME db_storage COMMAND db_storage_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)

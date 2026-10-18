@@ -1,0 +1,2 @@
+# Per-scenario database files are generated here by run_benchmarks.sh.
+# Contents are runtime artifacts and must not be committed.

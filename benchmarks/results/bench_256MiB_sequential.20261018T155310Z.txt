@@ -1,0 +1,60 @@
+NexusDB Benchmark Result
+========================
+status: RUN (completed)
+scenario: 256MiB-sequential
+limit_mb: 256
+page_count: 4096
+iterations: 4096
+sample_every: 32
+pool_frames_start: 256
+dirty_every: 8
+order: sequential
+random_seed: 1
+
+environment
+-----------
+platform_linux: 1
+container_managed: 1
+self_bound_to_cgroup: 1
+
+workload (measured)
+-------------------
+steps_run: 4096
+cache_hits: 0
+cache_misses: 4096
+cache_hit_ratio: 0.0000
+fetch_errors: 0
+operation_latency_ms: min=0.1717 max=86.4506 avg=11.7381 total=48079.3787
+
+buffer_pool (measured)
+----------------------
+start_frames: 256
+end_frames: 33280
+min_frames: 256
+max_frames: 33280
+resident_frames_last: 4096
+pinned_frames_last: 0
+grow_requests: 129
+shrink_requests: 0
+hold_decisions: 0
+failed_resizes: 0
+
+resources (measured)
+--------------------
+samples: 129
+memory_limit_bytes: 268435456 (saw_limit=1)
+memory_current_last: 139722752
+pressure: min=0.0139 max=0.5205 last=0.5205
+cpu_percent: min=21.35 max=64.73 avg=48.34 (have_cpu=1)
+
+unavailable_metrics (NOT measured; never fabricated)
+---------------------------------------------------
+engine_reported_cache_counters: unavailable (BufferPool exposes none; hit/miss observed by the harness via Contains())
+engine_reported_query_latency: unavailable (no query processor on this branch; per-step Fetch time reported above)
+
+environment_capture
+-------------------
+platform: Linux (cgroups v2)
+pointer_width_bits: 64
+page_size_bytes: 4096
+

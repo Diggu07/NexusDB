@@ -29,43 +29,53 @@ actually in the tree from what is still being designed or built.
 
 ### Implemented
 
-- **Container foundation (C)** — an in-memory container registry (64 slots) and
-  lifecycle: `container_create` → `container_start` → `container_stop` →
-  `container_delete`, plus `container_status` / `container_get`, name/limit
-  validation, and a portable **placeholder** child process (Linux
-  `fork/exec/waitpid`; a Windows `ping` shim so the demo runs on dev machines
-  without WSL). No real OS isolation yet.
-- **Page storage (C++17)** — a fixed 4 KiB `Page` value type and a `PageStorage`
-  that maps dense pages onto a single database file: `AllocatePage`,
-  `ReadPage`, write-through `WritePage`, `NumPages`, `PageExists`, `Flush`,
-  `Close`. Opening never truncates an existing file. All fallible calls report
-  through a `Status` / `DbError` result layer (no exceptions across the API).
+- **Container runtime (C11)** — an in-memory registry (64 slots) and lifecycle:
+  `container_create` → `container_start` → `container_stop` → `container_delete`,
+  plus `container_status` / `container_get`, name/limit validation. On Linux the
+  lifecycle provisions a real **cgroup v2** hierarchy (`memory.max` / `cpu.max`)
+  and `container_start` launches its workload through a **gated child** that is
+  attached to the cgroup *before* `exec` and placed in **Linux namespaces** (PID,
+  mount, network, UTS, IPC). A container may configure a `db_engine` executable
+  as its workload; without one it falls back to the built-in placeholder child.
+  A portable shim keeps the demo runnable on Windows dev machines without WSL.
+- **Database engine (C++17)** — a fixed 4 KiB `Page` value type and a
+  `PageStorage` that maps dense pages onto a single database file
+  (`AllocatePage`, `ReadPage`, write-through `WritePage`, `NumPages`,
+  `PageExists`, `Flush`, `Close`); a `BufferPool` over it with **LRU eviction and
+  runtime resizing** (`Resize`); and a minimal **`db_engine`** executable the
+  container launches as its workload — it opens the storage stack, stays alive
+  until `SIGTERM`/`SIGINT`, then flushes and closes cleanly (no SQL or network
+  layer yet). All fallible calls report through a `Status` / `DbError` result
+  layer (no exceptions across the API).
+- **OS-DB Bridge, adaptation & dashboard (C11 / C++17)** — `resource_monitor`
+  reads real cgroup v2 statistics (`memory.current` / `memory.max` / `cpu.stat`)
+  with explicit per-field availability (nothing is fabricated);
+  `adaptation_policy` turns memory pressure into a grow/shrink decision; a C++
+  adapter routes resize requests through the engine's public `BufferPool::Resize`;
+  and a dashboard renders live metrics as plain text or via an optional ncurses
+  UI, printing every unavailable metric as `unavailable`.
+- **Benchmarking** — a harness runs the **real** engine under a container memory
+  limit, sampling resources and adaptation decisions, and writes self-describing
+  result files (it refuses to emit numbers when the engine is absent rather than
+  substituting synthetic data).
 - **Build & tests** — CMake (primary) and a root `Makefile` (parallel path)
-  build both the container lifecycle test and the page-storage test; the tests
-  are registered with CTest.
-
-### Under development (Database Engine — Digvijay)
-
-- Buffer pool + page frames
-- LRU eviction and dynamic buffer-pool resizing
-- CRUD operations and query processing
+  build the container runtime, the DB engine, the bridge/dashboard/benchmark
+  targets and their tests; 17 tests are registered with CTest.
 
 ### Planned
 
 - Write-ahead logging (WAL) and crash recovery
-- Runtime coordinator and CLI
-- Container namespaces and cgroups v2 isolation
-- OS-DB Bridge, adaptation policy, live dashboard, benchmarking suite
+- Query processing / CRUD operations and a runtime coordinator + CLI
 
-> Everything under **Under development** and **Planned** is a design target.
-> It is **not** implemented on the current branch yet.
+> Everything under **Planned** is a design target and is **not** implemented on
+> this branch yet.
 
 ---
 
 ## Architecture (target design)
 
-NexusDB is planned as four layers. Only the container foundation and page
-storage exist so far.
+NexusDB is organised as four layers. The container engine, database engine,
+OS-DB Bridge and dashboard exist; the CLI and runtime coordinator are planned.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -74,20 +84,20 @@ storage exist so far.
 └────────────────────┬────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────┐
-│         Layer 2 — NexusDB Runtime               │  planned
+│         Layer 2 — NexusDB Runtime               │  partly implemented
 │   Runtime Coordinator · Container Engine        │
 │   DB Engine Implementation · OS-DB Bridge       │
 └──────┬─────────────────────────┬────────────────┘
        │                         │
 ┌──────▼──────┐         ┌────────▼───────────────┐
 │  Layer 3    │         │  NexusDB Container      │
-│  Container  │         │  DB Engine Instance     │  partly implemented
-│  (Isolated) │         │  Buffer Pool · WAL      │  (page storage only)
+│  Container  │         │  DB Engine Instance     │  implemented
+│  (Isolated) │         │  Buffer Pool · WAL      │  (no WAL yet)
 └──────┬──────┘         └────────────────────────┘
        │
 ┌──────▼──────────────────────────────────────────┐
-│         Layer 4 — Linux Kernel                  │  planned
-│   namespaces · cgroups v2 · process scheduler   │
+│         Layer 4 — Linux Kernel                  │  implemented
+│   namespaces · cgroups v2 · process scheduler   │  (Linux/WSL2)
 └─────────────────────────────────────────────────┘
 ```
 
@@ -97,12 +107,12 @@ storage exist so far.
 
 | Layer | Technology | Status |
 |-------|-----------|--------|
-| Database Engine | C++17 | page storage implemented |
-| Container Runtime | C11 | foundation implemented |
-| OS-DB Bridge | C++17 | planned |
+| Database Engine | C++17 | Page, PageStorage, BufferPool (LRU + resize), `db_engine` workload |
+| Container Runtime | C11 | registry + lifecycle + gated namespaced child |
+| OS-DB Bridge | C11 / C++17 | resource monitor + adaptation policy + resize adapter |
 | Build System | CMake 3.16+ / Make | implemented |
-| Container isolation | namespaces, cgroups v2 | planned |
-| Dashboard | ncurses | planned |
+| Container isolation | namespaces, cgroups v2 | implemented (Linux / WSL2) |
+| Dashboard | ncurses (optional) + plain text | implemented |
 | Testing | hand-written C/C++ test programs via CTest | implemented |
 
 ---
@@ -114,18 +124,26 @@ NexusDB/
 ├── include/
 │   ├── common/                 ← shared config + DbError/Status     [implemented]
 │   ├── container/              ← container runtime public API       [implemented]
-│   └── db/                     ← Page, PageStorage                  [implemented]
+│   ├── db/                     ← Page, PageStorage, BufferPool      [implemented]
+│   ├── bridge/                 ← resource monitor, adaptation       [implemented]
+│   ├── dashboard/              ← metrics + presentation API         [implemented]
+│   └── benchmark/              ← benchmark harness contract         [implemented]
 ├── src/
 │   ├── container/              ← C: registry + lifecycle + process  [implemented]
-│   └── db/storage/             ← Page + PageStorage                 [implemented]
-├── tests/
-│   ├── container/              ← container lifecycle test           [implemented]
-│   └── db/                     ← page storage test                  [implemented]
-├── docs/                       ← component documentation            [implemented]
-├── CMakeLists.txt              ← primary build                      [implemented]
-├── Makefile                    ← parallel build/test path            [implemented]
-└── (planned) src/db/{engine,buffer,cache,query,recovery}, src/cli,
-    src/runtime, src/bridge, src/main, scripts/, benchmarks/
+│   │                             + namespaces + cgroups v2          [implemented]
+│   ├── db/{storage,buffer,engine} ← Page, PageStorage, BufferPool,  [implemented]
+│   │                             db_engine workload executable       [implemented]
+│   ├── bridge/                 ← resource monitor + policy + adapter [implemented]
+│   ├── dashboard/              ← metrics + text/ncurses renderers    [implemented]
+│   └── benchmark/              ← harness + engine workload provider  [implemented]
+├── tests/                      ← container + db + bridge + dashboard [implemented]
+│                                 + benchmark tests (CTest)           [implemented]
+├── examples/                   ← container / dashboard drivers       [implemented]
+├── benchmarks/                 ← runner, workloads, results          [implemented]
+├── docs/                       ← component documentation             [implemented]
+├── scripts/                    ← cgroup setup / cleanup helpers       [implemented]
+├── CMakeLists.txt              ← primary build                       [implemented]
+└── Makefile                    ← parallel build/test path            [implemented]
 ```
 
 ---
@@ -138,9 +156,10 @@ NexusDB/
 - **CMake**: 3.16+
 - **Make** (optional): a `Makefile` path is provided for convenience
 
-The Linux/WSL2 target is required for the planned namespace/cgroup work; the
-container foundation and page storage build and run on a Windows dev machine
-with MinGW as well.
+The Linux/WSL2 target is required for real namespace/cgroup isolation; the
+container runtime, database engine, bridge, dashboard and their tests build and
+run on a Windows dev machine with MinGW as well (cgroup/namespace checks then
+report `ENV-LIMITED` instead of passing).
 
 ### Build
 
@@ -162,8 +181,19 @@ make          # mingw32-make on Windows
 make test
 ```
 
-There is no daemon, CLI, or database executable yet — only the test binaries
-built above.
+A `db_engine` executable is built (the container's workload — storage + buffer
+pool, no SQL/CLI yet); there is still no daemon, query CLI or client/server
+protocol.
+
+On Linux, tests that need a writable cgroup v2 hierarchy (container lifecycle,
+enforcement) must run inside a **delegated** cgroup scope, otherwise they report
+`ENV-LIMITED`. For example:
+
+```bash
+systemd-run --user --scope -q \
+  env NEXUS_CGROUP_ROOT=/sys/fs/cgroup/user.slice/.../nexusdb \
+  ctest --test-dir build --output-on-failure
+```
 
 ---
 
