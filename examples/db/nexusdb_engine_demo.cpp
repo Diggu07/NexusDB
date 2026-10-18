@@ -519,8 +519,9 @@ int main() {
     Check("evicted dirty bytes were written back",
           storage->ReadPage(6, &disk).ok() && MatchesPattern(disk, 0xE2));
   }
-  Info("Note: this is normal flush/eviction write-back only. NexusDB has no");
-  Info("WAL or crash recovery, so this is not crash durability.");
+  Info("Note: this demo exercises the buffer-pool layer only (normal");
+  Info("flush/eviction write-back). Crash durability lives in the Database");
+  Info("layer (WAL + recovery), which this demo does not link.");
   dirty_pool.reset();
 
   // ==================================================================
@@ -624,14 +625,14 @@ int main() {
   std::printf("      - Dirty-page write-back via flush and via eviction\n");
   std::printf("      - Explicit Status/DbError error handling\n");
 
-  std::printf("\n    Pending / not implemented on this branch (not claimed):\n");
-  std::printf("      - SQL parsing or execution; record-level CRUD\n");
-  std::printf("      - Write-ahead logging, crash recovery, ACID transactions\n");
-  std::printf("      - cgroup-driven automatic pool adaptation, OS-DB Bridge\n");
-  std::printf("      - Runtime coordinator, CLI, live dashboard, benchmarking\n");
+  std::printf("\n    Out of scope for this buffer-pool demo (built in other layers):\n");
+  std::printf("      - Record-level CRUD over SlottedPage/HeapTable/Catalog (R1)\n");
+  std::printf("      - Write-ahead logging + crash recovery (R2: Database layer)\n");
+  std::printf("      - Manager/Router coordination and the `nexusdb` CLI (R3)\n");
+  std::printf("      - SQL parsing/execution, transactions (not implemented anywhere)\n");
 
   std::printf("\n    Limitations:\n");
-  std::printf("      - Normal write-back only; no crash durability (no WAL/recovery)\n");
+  std::printf("      - This demo links only the storage + buffer-pool layers\n");
   std::printf("      - No cache-hit/disk-read counters are exposed by the API\n");
   std::printf("      - Single-threaded; no concurrency or locking\n");
   std::printf("      - Pages are allocated densely; no delete/free-list yet\n");

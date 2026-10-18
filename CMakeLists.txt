@@ -144,6 +144,52 @@ add_executable(db_storage_test
   tests/db/storage_test.cpp
 )
 
+# R1.1: slotted-page record storage (Digvijay, Database Engine). A
+# self-validating view over one fixed Page that packs variable-length records
+# and keeps stable slot ids; the primitive the record/CRUD layer builds on.
+add_executable(slotted_page_test
+  src/db/storage/page.cpp
+  src/db/record/slotted_page.cpp
+  tests/db/slotted_page_test.cpp
+)
+
+# R1.2: heap table (Digvijay, Database Engine). Stores variable-length records
+# across many pages via SlottedPage + BufferPool, with a recoverable on-disk
+# directory chain. Additive over the storage/buffer-pool stack.
+add_executable(heap_table_test
+  src/db/storage/page.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  tests/db/heap_table_test.cpp
+)
+
+# R1.3: persistent catalog (Digvijay, Database Engine). Maps table names to
+# HeapTable root page ids in a validated, versioned, chain-linked page format.
+add_executable(catalog_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  tests/db/catalog_test.cpp
+)
+
+# R1.3: minimal query/table-access executor (Digvijay, Database Engine).
+# Composes Catalog + HeapTable for table-scoped CRUD and scans.
+add_executable(query_executor_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  src/db/query/query_executor.cpp
+  tests/db/query_executor_test.cpp
+)
+
 # Phase 2: BufferPool over PageStorage (Digvijay, Database Engine).
 add_executable(buffer_pool_test
   src/db/storage/page.cpp
@@ -284,6 +330,10 @@ add_test(NAME dashboard_metrics COMMAND nexus_dashboard_test)
 add_test(NAME dashboard_demo COMMAND nexus_dashboard_demo)
 add_test(NAME benchmark_harness COMMAND nexus_benchmark_harness_test)
 add_test(NAME db_storage COMMAND db_storage_test)
+add_test(NAME slotted_page COMMAND slotted_page_test)
+add_test(NAME heap_table COMMAND heap_table_test)
+add_test(NAME catalog COMMAND catalog_test)
+add_test(NAME query_executor COMMAND query_executor_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)
 add_test(NAME nexusdb_engine_demo COMMAND nexusdb_engine_demo)

@@ -84,6 +84,42 @@ DB_OBJS := $(BUILD_DIR)/page.o \
            $(BUILD_DIR)/page_storage.o \
            $(BUILD_DIR)/storage_test.o
 
+# R1.1 DB slotted-page storage (Digvijay): SlottedPage over a fixed Page, C++17.
+SLOTTED_TEST_BIN := $(BUILD_DIR)/slotted_page_test$(EXE)
+SLOTTED_OBJS := $(BUILD_DIR)/page.o \
+                $(BUILD_DIR)/slotted_page.o \
+                $(BUILD_DIR)/slotted_page_test.o
+
+# R1.2 DB heap table (Digvijay): HeapTable over SlottedPage + BufferPool, C++17.
+HEAP_TEST_BIN := $(BUILD_DIR)/heap_table_test$(EXE)
+HEAP_OBJS := $(BUILD_DIR)/page.o \
+             $(BUILD_DIR)/page_storage.o \
+             $(BUILD_DIR)/buffer_pool.o \
+             $(BUILD_DIR)/slotted_page.o \
+             $(BUILD_DIR)/heap_table.o \
+             $(BUILD_DIR)/heap_table_test.o
+
+# R1.3 DB catalog (Digvijay): name -> HeapTable root index, C++17.
+CATALOG_TEST_BIN := $(BUILD_DIR)/catalog_test$(EXE)
+CATALOG_OBJS := $(BUILD_DIR)/page.o \
+                $(BUILD_DIR)/page_storage.o \
+                $(BUILD_DIR)/buffer_pool.o \
+                $(BUILD_DIR)/slotted_page.o \
+                $(BUILD_DIR)/heap_table.o \
+                $(BUILD_DIR)/catalog.o \
+                $(BUILD_DIR)/catalog_test.o
+
+# R1.3 DB query executor (Digvijay): Catalog + HeapTable CRUD/scan, C++17.
+QUERY_TEST_BIN := $(BUILD_DIR)/query_executor_test$(EXE)
+QUERY_OBJS := $(BUILD_DIR)/page.o \
+              $(BUILD_DIR)/page_storage.o \
+              $(BUILD_DIR)/buffer_pool.o \
+              $(BUILD_DIR)/slotted_page.o \
+              $(BUILD_DIR)/heap_table.o \
+              $(BUILD_DIR)/catalog.o \
+              $(BUILD_DIR)/query_executor.o \
+              $(BUILD_DIR)/query_executor_test.o
+
 # Phase 2 DB buffer pool (Digvijay): BufferPool over PageStorage, C++17.
 BUFFER_TEST_BIN := $(BUILD_DIR)/buffer_pool_test$(EXE)
 BUFFER_OBJS := $(BUILD_DIR)/page.o \
@@ -196,7 +232,7 @@ BENCH_ENGINE_OBJS := $(BUILD_DIR)/harness.o \
                      $(BUILD_DIR)/buffer_pool.o \
                      $(BUILD_DIR)/benchmark_main_engine.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -341,6 +377,42 @@ $(BUILD_DIR)/storage_test.o: tests/db/storage_test.cpp include/db/page_storage.h
 $(DB_TEST_BIN): $(DB_OBJS)
 	$(CXX) $(CXXFLAGS) $(DB_OBJS) -o $@
 
+$(BUILD_DIR)/slotted_page.o: src/db/record/slotted_page.cpp include/db/slotted_page.h include/db/page.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/slotted_page_test.o: tests/db/slotted_page_test.cpp include/db/slotted_page.h include/db/page.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(SLOTTED_TEST_BIN): $(SLOTTED_OBJS)
+	$(CXX) $(CXXFLAGS) $(SLOTTED_OBJS) -o $@
+
+$(BUILD_DIR)/heap_table.o: src/db/record/heap_table.cpp include/db/heap_table.h include/db/slotted_page.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/heap_table_test.o: tests/db/heap_table_test.cpp include/db/heap_table.h include/db/slotted_page.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(HEAP_TEST_BIN): $(HEAP_OBJS)
+	$(CXX) $(CXXFLAGS) $(HEAP_OBJS) -o $@
+
+$(BUILD_DIR)/catalog.o: src/db/catalog/catalog.cpp include/db/catalog.h include/db/heap_table.h include/db/slotted_page.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/catalog_test.o: tests/db/catalog_test.cpp include/db/catalog.h include/db/heap_table.h include/db/slotted_page.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(CATALOG_TEST_BIN): $(CATALOG_OBJS)
+	$(CXX) $(CXXFLAGS) $(CATALOG_OBJS) -o $@
+
+$(BUILD_DIR)/query_executor.o: src/db/query/query_executor.cpp include/db/query_executor.h include/db/catalog.h include/db/heap_table.h include/db/page.h include/db/page_storage.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/query_executor_test.o: tests/db/query_executor_test.cpp include/db/query_executor.h include/db/catalog.h include/db/heap_table.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(QUERY_TEST_BIN): $(QUERY_OBJS)
+	$(CXX) $(CXXFLAGS) $(QUERY_OBJS) -o $@
+
 $(BUILD_DIR)/buffer_pool.o: src/db/buffer/buffer_pool.cpp include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/error.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -386,12 +458,16 @@ $(BUILD_DIR)/mem_enforce_test.o: tests/container/mem_enforce_test.c include/cont
 $(MEM_ENFORCE_BIN): $(MEM_ENFORCE_OBJS) $(MEM_WORKLOAD_BIN)
 	$(CC) $(CFLAGS) $(MEM_ENFORCE_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(BUFFER_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(HARNESS_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(PROCESS_TEST_BIN)
 	$(NS_TEST_BIN)
 	$(DB_TEST_BIN)
+	$(SLOTTED_TEST_BIN)
+	$(HEAP_TEST_BIN)
+	$(CATALOG_TEST_BIN)
+	$(QUERY_TEST_BIN)
 	$(BUFFER_TEST_BIN)
 	$(CONTAINER_DEMO_BIN)
 	$(ENG_TEST_BIN)
