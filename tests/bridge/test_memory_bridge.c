@@ -55,6 +55,31 @@ static void test_root(char *buf, size_t len)
 #endif
 }
 
+/* In an isolated (non-kernel) root the platform shim that writes
+ * memory.current runs only on Windows, so Linux leaves the container fixture
+ * without the one telemetry file cgroup_read_metrics() requires. Provide the
+ * same mock the Windows shim writes (0 = no usage yet) ONLY when the file is
+ * genuinely absent, so a real cgroup hierarchy (where the kernel owns the
+ * file) is never touched. Best-effort: on failure the read reports PROCESS,
+ * which is the honest outcome for an unreadable telemetry source. */
+static void ensure_current_mock(const char *root, const char *name)
+{
+    char path[NEXUS_PATH_MAX + 32];
+    FILE *f;
+
+    snprintf(path, sizeof(path), "%s/%s/memory.current", root, name);
+    f = fopen(path, "r");
+    if (f) {
+        fclose(f);
+        return; /* real cgroup file: leave the kernel value alone */
+    }
+    f = fopen(path, "w");
+    if (!f)
+        return;
+    fputs("0\n", f);
+    fclose(f);
+}
+
 int main(void)
 {
     char root[NEXUS_PATH_MAX];
@@ -96,6 +121,7 @@ int main(void)
      * configured at create (256MB / cpu 50) without allocating anything. */
     rc = container_create("mbr1", 256UL * 1024 * 1024, 50, NULL);
     CHECK("create mbr1 (256MB, cpu 50)", rc == NEXUS_OK);
+    ensure_current_mock(root, "mbr1");
     rc = memory_bridge_query("mbr1", &m);
     CHECK("bridge query mbr1", rc == NEXUS_OK);
     CHECK("bridge reports configured max",
@@ -119,6 +145,7 @@ int main(void)
     /* 5. Unlimited container formats honestly (no fake zero pressure). */
     rc = container_create("mbrmax", 0, 0, NULL);
     CHECK("create mbrmax (unlimited)", rc == NEXUS_OK);
+    ensure_current_mock(root, "mbrmax");
     rc = memory_bridge_query("mbrmax", &m);
     CHECK("bridge query unlimited", rc == NEXUS_OK && m.memory_max == 0);
     rc = memory_bridge_format(&m, line, sizeof(line));
