@@ -34,6 +34,7 @@
 #else
 #include <signal.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Child-side gate hooks used by section 12. */
@@ -236,6 +237,37 @@ int main(void)
             CHECK("gated child alive after release",
                   process_is_alive(gpid) != 0);
             CHECK("stop released gated child -> 0", process_stop(gpid) == 0);
+        }
+    }
+
+    /* 8b. A released workload ignores SIGHUP so closing the launching terminal
+     * cannot terminate a service that already left the launcher's cgroup. */
+    {
+        static const char *const hup_sleep[] = { "sleep", "30", NULL };
+        process_gate_t gate;
+        long gpid;
+
+        gate.pid = -1;
+        gate.release_fd = -1;
+        gate.status_fd = -1;
+        spec.path = "/bin/sleep";
+        spec.argv = hup_sleep;
+        spec.cwd = NULL;
+
+        gpid = process_spawn_gated(&spec, NULL, &gate);
+        CHECK("gated spawn for SIGHUP probe -> pid > 0", gpid > 0);
+        if (gpid > 0) {
+            struct timespec pause = { 0, 100000000L };
+
+            CHECK("release SIGHUP probe -> returns pid",
+                  process_gate_release(&gate) == gpid);
+            nanosleep(&pause, NULL);
+            CHECK("send SIGHUP to released workload",
+                  kill((pid_t)gpid, SIGHUP) == 0);
+            nanosleep(&pause, NULL);
+            CHECK("released workload survives SIGHUP",
+                  process_is_alive(gpid) != 0);
+            CHECK("stop SIGHUP probe -> 0", process_stop(gpid) == 0);
         }
     }
 

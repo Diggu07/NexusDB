@@ -52,6 +52,15 @@ static void put_bytes(sb_t *sb, unsigned long bytes)
         sb_line(sb, "%s", tmp);
 }
 
+/* cpu.max quota/period expressed as a core count ("2.00 cores"). */
+static void put_cpu_limit(sb_t *sb, const nexus_resource_snapshot_t *r)
+{
+    if (r->has_cpu_limit && r->cpu_period_us > 0)
+        sb_line(sb, "%.2f cores", (double)r->cpu_quota_us / (double)r->cpu_period_us);
+    else
+        sb_line(sb, "unlimited");
+}
+
 int nexus_dashboard_render_text(const nexus_dashboard_metrics_t *metrics,
                                 char *buf, size_t len)
 {
@@ -71,6 +80,8 @@ int nexus_dashboard_render_text(const nexus_dashboard_metrics_t *metrics,
     sb_line(&sb, "Resource\n--------\n");
 
     if (metrics->has_resource) {
+        sb_line(&sb, "Attached:         %s\n",
+                metrics->resource.attached ? "yes" : "no (limits not enforced)");
         sb_line(&sb, "Memory used:      ");
         put_bytes(&sb, metrics->resource.memory_current);
         sb_line(&sb, "\nMemory limit:     ");
@@ -80,10 +91,28 @@ int nexus_dashboard_render_text(const nexus_dashboard_metrics_t *metrics,
             sb_line(&sb, "unlimited");
         sb_line(&sb, "\nMemory pressure:  %.1f%%\n",
                 metrics->resource.memory_pressure * 100.0);
+        sb_line(&sb, "CPU limit:        ");
+        put_cpu_limit(&sb, &metrics->resource);
+        sb_line(&sb, "\n");
+        if (metrics->resource.has_pressure)
+            sb_line(&sb, "Mem PSI (some):   %.2f%%\n",
+                    metrics->resource.pressure_some_avg10);
+        else
+            sb_line(&sb, "Mem PSI (some):   %s\n", UNAVAILABLE);
+        if (metrics->resource.has_events)
+            sb_line(&sb, "OOM events:       %lu (kills %lu)\n",
+                    metrics->resource.oom_events,
+                    metrics->resource.oom_kill_events);
+        else
+            sb_line(&sb, "OOM events:       %s\n", UNAVAILABLE);
     } else {
+        sb_line(&sb, "Attached:         %s\n", UNAVAILABLE);
         sb_line(&sb, "Memory used:      %s\n", UNAVAILABLE);
         sb_line(&sb, "Memory limit:     %s\n", UNAVAILABLE);
         sb_line(&sb, "Memory pressure:  %s\n", UNAVAILABLE);
+        sb_line(&sb, "CPU limit:        %s\n", UNAVAILABLE);
+        sb_line(&sb, "Mem PSI (some):   %s\n", UNAVAILABLE);
+        sb_line(&sb, "OOM events:       %s\n", UNAVAILABLE);
     }
 
     if (metrics->has_cpu_percent)
@@ -151,6 +180,20 @@ int nexus_dashboard_render_text(const nexus_dashboard_metrics_t *metrics,
         sb_line(&sb, "Reason:           %s\n", UNAVAILABLE);
         sb_line(&sb, "Target frames:    %s\n", UNAVAILABLE);
         sb_line(&sb, "Pressure:         %s\n", UNAVAILABLE);
+    }
+
+    if (metrics->resize.available) {
+        if (!metrics->resize.has_actual) {
+            sb_line(&sb, "Resize applied:   %s\n", UNAVAILABLE);
+        } else if (metrics->resize.applied) {
+            sb_line(&sb, "Resize applied:   yes (%lu frames)\n",
+                    metrics->resize.actual_frames);
+        } else {
+            sb_line(&sb, "Resize applied:   no (actual %lu frames)\n",
+                    metrics->resize.actual_frames);
+        }
+    } else {
+        sb_line(&sb, "Resize applied:   %s\n", UNAVAILABLE);
     }
 
     if (sb.overflow)

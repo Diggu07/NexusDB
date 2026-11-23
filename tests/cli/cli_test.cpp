@@ -26,10 +26,10 @@
 
 namespace {
 
+#if NEXUS_HAVE_SHELL
 int g_failures = 0;
 int g_skipped = 0;
 
-#if NEXUS_HAVE_SHELL
 #define CHECK(desc, expr)                     \
   do {                                        \
     if (expr) {                               \
@@ -100,7 +100,7 @@ int main() {
 #else
   const char* cli_env = std::getenv("NEXUSDB_CLI");
   const std::string cli =
-      (cli_env != nullptr && cli_env[0] != '\0') ? cli_env : "./nexusdb_cli";
+      (cli_env != nullptr && cli_env[0] != '\0') ? cli_env : "./nexusdb";
   if (access(cli.c_str(), X_OK) != 0) {
     SKIP("nexusdb CLI binary unavailable (set NEXUSDB_CLI)");
     std::printf("\n=== ALL TESTS PASSED (%d failure(s), %d env-limited) ===\n",
@@ -221,6 +221,27 @@ int main() {
           r.exit_code == 0 && Contains(r.out, "no records"));
   }
 
+  // ---- new grammar: aliases, help topics, units (no cgroup needed) ----
+  {
+    CliResult r = RunCli(cli, "create --help", outfile);
+    CHECK("create --help exits 0", r.exit_code == 0);
+    CHECK("create --help documents --memory", Contains(r.out, "--memory"));
+  }
+  CHECK("status --help exits 0",
+        RunCli(cli, "status --help", outfile).exit_code == 0);
+  CHECK("list exits 0", RunCli(cli, "list", outfile).exit_code == 0);
+  CHECK("memory huge value -> exit 3",
+        RunCli(cli, "create x --memory 99999999999999999999", outfile)
+                .exit_code == 3);
+  CHECK("memory bad suffix -> exit 3",
+        RunCli(cli, "create x --memory 16Q", outfile).exit_code == 3);
+  CHECK("cpu-percent 101 -> exit 3",
+        RunCli(cli, "create x --cpu-percent 101", outfile).exit_code == 3);
+  CHECK("exec missing container -> exit 1",
+        RunCli(cli, "exec ghost ping", outfile).exit_code == 1);
+  CHECK("delete unknown container -> exit 4",
+        RunCli(cli, "delete ghost", outfile).exit_code == 4);
+
   // ---- container lifecycle (needs a configured engine binary) ----
   {
     const char* eng = std::getenv("NEXUSDB_DB_ENGINE");
@@ -236,13 +257,46 @@ int main() {
       } else {
         CHECK("container start -> 0",
               RunCli(cli, "container start e2e1", outfile).exit_code == 0);
+        // The socket is normally <data-dir>/nexusdb.sock, but on filesystems
+        // that cannot host Unix sockets the engine relocates it and leaves a
+        // <data-dir>/nexusdb.sock.path marker instead; both must be detectable.
+        {
+          const std::filesystem::path sock(root + "/e2e1/nexusdb.sock");
+          const std::filesystem::path marker(root + "/e2e1/nexusdb.sock.path");
+          bool found = std::filesystem::exists(sock);
+          if (!found && std::filesystem::exists(marker)) {
+            std::ifstream in(marker);
+            std::string target;
+            found = static_cast<bool>(std::getline(in, target)) && !target.empty();
+          }
+          CHECK("control socket (or relocation marker) exists", found);
+        }
         {
           CliResult r = RunCli(cli, "container status e2e1", outfile);
           CHECK("status shows RUNNING",
                 r.exit_code == 0 && Contains(r.out, "RUNNING"));
         }
-        CHECK("db command refused while container RUNNING -> exit 1",
-              RunCli(cli, "db init e2e1", outfile).exit_code == 1);
+        // While RUNNING, database commands are proxied to the engine's control
+        // socket instead of opening the files behind its back.
+        CHECK("db init while RUNNING (via engine) -> 0",
+              RunCli(cli, "db init e2e1", outfile).exit_code == 0);
+        CHECK("table create while RUNNING -> 0",
+              RunCli(cli, "table create e2e1 t", outfile).exit_code == 0);
+        {
+          CliResult r = RunCli(cli, "insert e2e1 t 11223344", outfile);
+          CHECK("insert while RUNNING -> 0 and reports page/slot",
+                r.exit_code == 0 && Contains(r.out, "inserted page="));
+        }
+        {
+          CliResult r = RunCli(cli, "scan e2e1 t", outfile);
+          CHECK("scan while RUNNING shows record",
+                r.exit_code == 0 && Contains(r.out, "hex=11223344"));
+        }
+        {
+          CliResult r = RunCli(cli, "exec e2e1 ping", outfile);
+          CHECK("exec ping -> pong",
+                r.exit_code == 0 && Contains(r.out, "pong"));
+        }
         CHECK("container stop -> 0",
               RunCli(cli, "container stop e2e1", outfile).exit_code == 0);
         {
@@ -250,21 +304,44 @@ int main() {
           CHECK("status shows STOPPED",
                 r.exit_code == 0 && Contains(r.out, "STOPPED"));
         }
-        // The engine created the database; it is usable once stopped.
-        CHECK("db usable after stop -> 0",
-              RunCli(cli, "db init e2e1", outfile).exit_code == 0);
-        CHECK("table create in recovered db -> 0",
-              RunCli(cli, "table create e2e1 t", outfile).exit_code == 0);
-        CHECK("insert into recovered db -> 0",
-              RunCli(cli, "insert e2e1 t 11223344", outfile).exit_code == 0);
+        // The record written through the socket is durable and readable
+        // directly once the engine has shut down.
         {
           CliResult r = RunCli(cli, "scan e2e1 t", outfile);
-          CHECK("scan recovered db shows record",
+          CHECK("scan after stop shows persisted record",
                 r.exit_code == 0 && Contains(r.out, "hex=11223344"));
         }
         CHECK("container delete -> 0",
               RunCli(cli, "container delete e2e1", outfile).exit_code == 0);
       }
+    }
+  }
+
+  // ---- a container whose engine fails initialization must never look RUNNING
+  // (start sends an engine that execs but exits immediately: start must
+  // report an operational error and the container must be STOPPED after). ----
+  {
+    const bool have_shell_engine = access("/bin/false", X_OK) == 0;
+    if (!have_shell_engine) {
+      SKIP("/bin/false unavailable (failed-engine-start test)");
+    } else {
+      CHECK("broken-engine create -> 0",
+            RunCli(cli, "create badeng --engine /bin/false", outfile)
+                .exit_code == 0);
+      {
+        CliResult r = RunCli(cli, "start badeng", outfile);
+        CHECK("starting a dead engine -> operational error", r.exit_code == 1);
+        CHECK("start error explains the engine's initialization failure",
+              Contains(r.out, "failed to initialize"));
+      }
+      {
+        CliResult r = RunCli(cli, "status badeng", outfile);
+        CHECK("failed engine container is STOPPED, not RUNNING",
+              r.exit_code == 0 && Contains(r.out, "STOPPED") &&
+                  !Contains(r.out, "RUNNING"));
+      }
+      CHECK("broken-engine delete -> 0",
+            RunCli(cli, "delete badeng", outfile).exit_code == 0);
     }
   }
 

@@ -44,6 +44,8 @@ enum class CommandKind {
   kContainerStop,
   kContainerStatus,
   kContainerDelete,
+  kContainerList,
+  kContainerExec,
   kDbInit,
   kTableCreate,
   kTableList,
@@ -56,14 +58,22 @@ enum class CommandKind {
 
 struct Command {
   CommandKind kind = CommandKind::kHelp;
-  std::string name;   // container / database name
+  std::string name;     // container / database name
   std::string table;
   std::vector<std::uint8_t> data;
   Page::PageId page = 0;
   std::uint16_t slot = 0;
+#ifdef _WIN32
+  unsigned long long memory = 0;
+#else
   unsigned long memory = 0;
+#endif
   unsigned int cpu = 0;
   std::string engine;
+  std::string request;      // raw request text for `exec`
+  std::string program_path; // argv[0], used to locate db_engine by default
+  std::string help_topic;   // "" or the subcommand name for `<cmd> --help`
+  bool engine_explicit = false; // --engine or --no-engine was provided
 };
 
 struct Result {
@@ -79,11 +89,16 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
 // Dispatches an already-parsed command to the manager.
 Result Dispatch(Manager* mgr, const Command& cmd);
 
-// Parse + dispatch in one call (what main() uses).
-Result Run(Manager* mgr, const std::vector<std::string>& args);
+// Parse + dispatch in one call (what main() uses). `program_path` is argv[0];
+// it is used to resolve the default `db_engine` executable that sits next to
+// the CLI. Passing an empty path keeps the previous behavior (no default).
+Result Run(Manager* mgr, const std::vector<std::string>& args,
+           const std::string& program_path = std::string());
 
-// Usage/help text (also returned by the `help` command).
+// Usage/help text. HelpText() is the overview; HelpTopic(name) returns focused
+// help for a command (e.g. "create", "status") or the overview when unknown.
 const char* HelpText();
+const char* HelpTopic(const std::string& name);
 
 }  // namespace cli
 }  // namespace nexusdb

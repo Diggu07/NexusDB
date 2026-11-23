@@ -269,6 +269,16 @@ int main(void)
                    rc);
             return 0;
         }
+        /* Creating the cgroup does not imply the workload can be migrated into
+         * it; require the caller to be inside the delegated subtree. */
+        if (!cgroup_self_in_delegated_root()) {
+            printf("ENV-LIMITED: current process is outside the delegated "
+                   "cgroup subtree; run inside `systemd-run --user --scope`.\n");
+            return 0;
+        }
+        memset(&st, 0, sizeof(st));
+        memset(&delta, 0, sizeof(delta));
+        current_after = 0;
 
         snprintf(name, sizeof(name), "nexus_p4_mem_%d", getpid_compat());
         if (cgroup_create(name, cg, sizeof(cg)) != NEXUS_OK) {

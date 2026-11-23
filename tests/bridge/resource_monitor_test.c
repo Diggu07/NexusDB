@@ -137,6 +137,12 @@ int main(void)
     (void)write_case(valid_dir, "memory.current", "1048576");
     (void)write_case(valid_dir, "memory.max", "4194304");
     (void)write_case(valid_dir, "cpu.stat", "usage_usec 12345\n");
+    (void)write_case(valid_dir, "cpu.max", "20000 100000\n");
+    (void)write_case(valid_dir, "memory.pressure",
+                     "some avg10=2.50 avg60=1.00 avg300=0.50 total=99\n");
+    (void)write_case(valid_dir, "memory.events",
+                     "low 0\nhigh 0\nmax 0\noom 1\noom_kill 0\n");
+    (void)write_case(valid_dir, "cgroup.procs", "4242\n");
     {
         int rc = nexus_bridge_read_cgroup(valid_dir, &s);
         printf("--- valid: rc=%s current=%lu max=%lu pressure=%.4f cpu=%lu ---\n",
@@ -155,6 +161,18 @@ int main(void)
         }
         CHECK("has_cpu set when cpu.stat present", s.has_cpu == 1);
         CHECK("cpu_usage_usec read", s.cpu_usage_usec == 12345UL);
+        CHECK("attached set when cgroup.procs non-empty", s.attached == 1);
+        CHECK("cpu.max quota/period surfaced",
+              s.has_cpu_limit == 1 && s.cpu_quota_us == 20000UL &&
+                  s.cpu_period_us == 100000UL);
+        {
+            double diff = s.pressure_some_avg10 - 2.50;
+            if (diff < 0) diff = -diff;
+            CHECK("PSI some avg10 surfaced",
+                  s.has_pressure == 1 && diff < 1e-9);
+        }
+        CHECK("memory.events oom counters surfaced",
+              s.has_events == 1 && s.oom_events == 1 && s.oom_kill_events == 0);
     }
 
     /* ---- missing cpu.stat: memory valid, cpu explicitly unavailable ---- */
@@ -167,6 +185,16 @@ int main(void)
         CHECK("no cpu.stat -> snapshot valid", s.valid == 1);
         CHECK("no cpu.stat -> has_cpu == 0", s.has_cpu == 0);
         CHECK("no cpu.stat -> cpu_usage_usec == 0", s.cpu_usage_usec == 0);
+    }
+
+    /* ---- optional files absent: flags read 0, nothing fabricated ---- */
+    {
+        int rc = nexus_bridge_read_cgroup(nocpu_dir, &s);
+        CHECK("no optional files -> still OK", rc == NEXUS_OK);
+        CHECK("no cpu.max -> has_cpu_limit == 0", s.has_cpu_limit == 0);
+        CHECK("no memory.pressure -> has_pressure == 0", s.has_pressure == 0);
+        CHECK("no memory.events -> has_events == 0", s.has_events == 0);
+        CHECK("no cgroup.procs -> attached == 0", s.attached == 0);
     }
 
     /* ---- unlimited ("max") memory ---- */
@@ -249,15 +277,32 @@ int main(void)
     CHECK("container wrapper unknown -> NOT_FOUND",
           nexus_bridge_read_container("nope-not-created", &s) == NEXUS_ERR_NOT_FOUND);
     {
-        int rc = container_create("brtest1", 268435456UL, 50, "./db_engine");
+        /* Route the runtime at an isolated root so this path is deterministic
+         * without a privileged/delegated cgroup. container_create provisions
+         * <root>/brtest1 and writes the limit; supply the required
+         * memory.current fixture the kernel would provide on a real cgroup. */
+        char iso_root[NEXUS_PATH_MAX];
+        char cg_dir[NEXUS_PATH_MAX];
+        int rc;
+        join(iso_root, sizeof(iso_root), root, "isocroot");
+        (void)mkdir_compat(iso_root);
+        CHECK("bridge lookup: isolated cgroup root init",
+              cgroup_init(iso_root) == NEXUS_OK);
+
+        rc = container_create("brtest1", 268435456UL, 50, "./db_engine");
         CHECK("container_create for bridge lookup", rc == NEXUS_OK);
+        join(cg_dir, sizeof(cg_dir), iso_root, "brtest1");
+        (void)write_case(cg_dir, "memory.current", "1234");
         rc = nexus_bridge_read_container("brtest1", &s);
         CHECK("container wrapper reads real cgroup path", rc == NEXUS_OK);
         CHECK("container wrapper snapshot valid", s.valid == 1);
         CHECK("container wrapper has_limit", s.has_limit == 1);
         CHECK("container wrapper memory_max == configured limit",
               s.memory_max == 268435456UL);
+        CHECK("container wrapper reports not-attached when no workload",
+              s.attached == 0);
         (void)container_delete("brtest1");
+        (void)rmdir_compat(iso_root);
     }
 
     /* ---- misc ---- */
@@ -267,6 +312,10 @@ int main(void)
     remove_case(valid_dir, "memory.current");
     remove_case(valid_dir, "memory.max");
     remove_case(valid_dir, "cpu.stat");
+    remove_case(valid_dir, "cpu.max");
+    remove_case(valid_dir, "memory.pressure");
+    remove_case(valid_dir, "memory.events");
+    remove_case(valid_dir, "cgroup.procs");
     remove_case(nocpu_dir, "memory.current");
     remove_case(nocpu_dir, "memory.max");
     remove_case(unlim_dir, "memory.current");

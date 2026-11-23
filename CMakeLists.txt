@@ -228,6 +228,22 @@ add_executable(recovery_test
   tests/db/recovery_test.cpp
 )
 
+# R2: durability regression test (AUD-01). Verifies WAL appends and database
+# page writes are synchronized (fsync) before being reported durable, and that
+# a record survives abrupt termination after sync completes.
+add_executable(nexusdb_durability_test
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  src/db/record/slotted_page.cpp
+  src/db/record/heap_table.cpp
+  src/db/catalog/catalog.cpp
+  src/db/query/query_executor.cpp
+  src/db/wal/wal.cpp
+  src/db/database/database.cpp
+  tests/db/durability_test.cpp
+)
+
 # Phase 2: BufferPool over PageStorage (Digvijay, Database Engine).
 add_executable(buffer_pool_test
   src/db/storage/page.cpp
@@ -295,6 +311,10 @@ add_executable(nexusdb_cli
   src/container/namespace.c
   src/container/process.c
 )
+
+# The documented command is `nexusdb`; the CMake target keeps its historical
+# name so `$<TARGET_FILE:nexusdb_cli>` and the test wiring stay unchanged.
+set_target_properties(nexusdb_cli PROPERTIES OUTPUT_NAME nexusdb)
 
 # R3: Manager/Router unit + integration test (isolated temp data dir).
 add_executable(manager_test
@@ -434,6 +454,27 @@ add_executable(engine_adaptation_test
   tests/bridge/engine_adaptation_test.cpp
 )
 
+# Engine-backed live dashboard demo (Rehan): the full container -> bridge ->
+# policy -> real BufferPool -> dashboard pipeline, rendering REAL engine
+# capacity/resident/pinned alongside REAL cgroup memory/CPU. Reports
+# ENV-LIMITED (engine-only frame) when no writable cgroup is available.
+add_executable(nexus_dashboard_engine
+  src/dashboard/metrics.c
+  src/dashboard/dashboard_text.c
+  src/bridge/resource_monitor.c
+  src/bridge/adaptation_policy.c
+  src/bridge/buffer_pool_adapter.cpp
+  src/container/container.c
+  src/container/cgroup.c
+  src/container/namespace.c
+  src/container/process.c
+  src/db/storage/page.cpp
+  src/db/storage/page_storage.cpp
+  src/db/buffer/buffer_pool.cpp
+  examples/dashboard/dashboard_engine_demo.cpp
+)
+target_compile_definitions(nexus_dashboard_engine PRIVATE NEXUS_HAVE_DB_ENGINE)
+
 enable_testing()
 add_test(NAME container_lifecycle COMMAND nexus_container_test)
 add_test(NAME container_engine_demo COMMAND container_engine_demo)
@@ -453,6 +494,7 @@ add_test(NAME heap_table COMMAND heap_table_test)
 add_test(NAME catalog COMMAND catalog_test)
 add_test(NAME query_executor COMMAND query_executor_test)
 add_test(NAME wal COMMAND wal_test)
+add_test(NAME durability COMMAND nexusdb_durability_test)
 add_test(NAME recovery COMMAND recovery_test)
 add_test(NAME buffer_pool COMMAND buffer_pool_test)
 add_test(NAME buffer_pool_demo COMMAND buffer_pool_demo)
@@ -462,6 +504,26 @@ add_test(NAME memory_enforcement COMMAND nexus_mem_enforce_test)
 add_test(NAME manager COMMAND manager_test)
 add_test(NAME cli COMMAND nexusdb_cli_test)
 add_test(NAME engine_adaptation COMMAND engine_adaptation_test)
+add_test(NAME dashboard_engine COMMAND nexus_dashboard_engine nexusdb-engine-ci 256 1)
+
+# Bash prompt-integration test: drives the real CLI through the `nexus`
+# shell wrapper (enter/leave/context + delegation) and checks rendered
+# prompts. POSIX-only (needs bash>=4.4-style PS1 expansion); on Windows the
+# test is not registered, mirroring the shell-bound cli test's ENV-LIMITED
+# contract.
+if(UNIX)
+  add_test(NAME cli_bash_prompt_integration
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/cli/bash_integration_test.sh
+            $<TARGET_FILE:nexusdb_cli>)
+  set_tests_properties(cli_bash_prompt_integration PROPERTIES
+    SKIP_REGULAR_EXPRESSION "=== ENV-LIMITED")
+endif()
+
+set_tests_properties(container_lifecycle namespace_isolation db_engine_binary cli
+  PROPERTIES SKIP_REGULAR_EXPRESSION "ALL TESTS PASSED.*env-limited")
+
+set_tests_properties(container_engine_demo cpu_enforcement memory_enforcement
+  PROPERTIES SKIP_REGULAR_EXPRESSION "=== ENV-LIMITED")
 
 # Point the container and engine-contract tests at the freshly built engine so
 # their configured-engine checks run for real (instead of ENV-LIMITED).

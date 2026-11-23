@@ -143,6 +143,7 @@ bool MatchesPattern(const std::uint8_t* p, std::size_t n, std::uint8_t seed) {
   return true;
 }
 
+#if NEXUS_HAVE_FORK
 struct ScanState {
   std::size_t count = 0;
   std::size_t expect_len = 0;
@@ -160,7 +161,6 @@ bool ScanCb(const QueryExecutor::RecordId&, const std::uint8_t* data,
   return true;
 }
 
-#if NEXUS_HAVE_FORK
 // Logs the page image durably to `wal`, then crashes the process immediately --
 // before BufferPool can write the data page. This lands the process exactly in
 // the "durable log record, no data-page write" window.

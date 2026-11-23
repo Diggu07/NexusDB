@@ -50,7 +50,17 @@ Status BufferPool::Create(PageStorage* storage,
                          "buffer pool capacity must be positive");
   }
 
-  std::unique_ptr<BufferPool> pool(new BufferPool(storage, capacity));
+  std::unique_ptr<BufferPool> pool;
+  try {
+    pool.reset(new (std::nothrow) BufferPool(storage, capacity));
+  } catch (...) {
+    return Status::Error(DbError::kOutOfMemory,
+                         "buffer pool allocation failed");
+  }
+  if (pool == nullptr) {
+    return Status::Error(DbError::kOutOfMemory,
+                         "buffer pool allocation failed");
+  }
   *out = std::move(pool);
   return Status::Ok();
 }

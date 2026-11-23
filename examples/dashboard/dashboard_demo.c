@@ -35,6 +35,7 @@
 
 #include "bridge/adaptation_policy.h"
 #include "bridge/resource_monitor.h"
+#include "container/cgroup.h"
 #include "container/container.h"
 #include "dashboard/dashboard.h"
 #include "dashboard/metrics.h"
@@ -66,6 +67,33 @@ static void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 #endif
 }
+
+#ifndef _WIN32
+/* 1 when a real, writable kernel cgroup2 subtree is available. The dashboard
+ * reads a live container cgroup; without one the demo reports ENV-LIMITED and
+ * exits cleanly instead of treating an environment limitation as a failure. */
+static int cgroup_kernel_available(void)
+{
+    char probe[NEXUS_PATH_MAX];
+    char f[NEXUS_PATH_MAX + 32];
+    FILE *fp;
+    int ok;
+
+    if (cgroup_init(NULL) != NEXUS_OK)
+        return 0;
+    if (cgroup_create("nexus_dash_probe", probe, sizeof(probe)) != NEXUS_OK)
+        return 0;
+    snprintf(f, sizeof(f), "%s/cgroup.controllers", probe);
+    fp = fopen(f, "r");
+    ok = (fp != NULL);
+    if (fp != NULL)
+        fclose(fp);
+    if (ok && cgroup_set_limits(probe, 64UL * 1024 * 1024, 25) != NEXUS_OK)
+        ok = 0;
+    (void)cgroup_destroy(probe);
+    return ok;
+}
+#endif
 
 struct demo_ctx {
     const char *name;
@@ -142,11 +170,42 @@ int main(int argc, char **argv)
 
     rc = container_create(name, memory_mb * 1024UL * 1024UL, 50, NULL);
     if (rc != NEXUS_OK) {
+#ifndef _WIN32
+        /* No writable kernel cgroup: an environment limitation, not a demo
+         * failure. Bail out before touching invalid container state so nothing
+         * is left half-provisioned, and report it honestly. */
+        if (!cgroup_kernel_available()) {
+            fprintf(stderr,
+                    "ENV-LIMITED: no writable kernel cgroup v2 root "
+                    "(container_create('%s') -> %s).\n"
+                    "  The live dashboard reads a real container cgroup. Run "
+                    "inside a delegated scope, e.g.:\n"
+                    "    systemd-run --user --scope env "
+                    "NEXUS_CGROUP_ROOT=<writable-cgroup> %s\n",
+                    name, container_strerror(rc), argv[0]);
+            return 0;
+        }
+#endif
+        /* Root is usable, so this is a real failure. */
         fprintf(stderr, "container_create('%s') failed: %s\n", name,
                 container_strerror(rc));
         return 2;
     }
-    (void)container_start(name);
+
+    /* Start (spawn workload + attach it to the cgroup). A failure here means
+     * the cgroup exists but NO workload is attached, so its limits are not
+     * enforced on anything. Surface that instead of ignoring the code and
+     * rendering an empty cgroup as if it were a live one. */
+    rc = container_start(name);
+    if (rc != NEXUS_OK) {
+        fprintf(stderr,
+                "container_start('%s') failed: %s\n"
+                "  the cgroup is configured but no workload is attached, so its\n"
+                "  limits are not enforced. Run inside a delegated cgroup scope, e.g.:\n"
+                "    systemd-run --user --scope env NEXUS_CGROUP_ROOT=<writable-cgroup> %s\n",
+                name, container_strerror(rc), argv[0]);
+        /* Continue: the dashboard will honestly report \"Attached: no\". */
+    }
 
     memset(&d, 0, sizeof(d));
     d.name = name;

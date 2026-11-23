@@ -217,6 +217,94 @@ int main(void)
         CHECK("render zero-access hits 0", Has(text, "Cache hits:       0"));
     }
 
+    /* ---- resize outcome: recommendation vs actually applied ---- */
+    {
+        nexus_resource_snapshot_t res = Snap(0.30, 4096);
+        nexus_adapt_decision_t dec;
+        nexus_dashboard_metrics_t out;
+        memset(&dec, 0, sizeof(dec));
+        dec.action = NEXUS_ADAPT_GROW;
+        dec.reason = NEXUS_REASON_OK;
+        dec.target_frames = 356;
+        dec.pressure = 0.30;
+        memset(&in, 0, sizeof(in));
+        in.resource = &res;
+        in.adaptation = &dec;
+        /* FullProvider reports pool capacity 600, so target 356 is not reflected. */
+        CHECK("collect resize (mismatch) -> OK",
+              nexus_dashboard_collect(&in, FullProvider, NULL, &out) == NEXUS_OK);
+        CHECK("resize outcome available", out.resize.available == 1);
+        CHECK("resize outcome has_actual", out.resize.has_actual == 1);
+        CHECK("resize not applied when actual != target", out.resize.applied == 0);
+        CHECK("render resize not applied",
+              (nexus_dashboard_render_text(&out, text, sizeof(text)) == NEXUS_OK) &&
+                  Has(text, "Resize applied:   no (actual 600 frames)"));
+    }
+
+    {
+        nexus_resource_snapshot_t res = Snap(0.30, 4096);
+        nexus_adapt_decision_t dec;
+        nexus_dashboard_metrics_t out;
+        memset(&dec, 0, sizeof(dec));
+        dec.action = NEXUS_ADAPT_GROW;
+        dec.reason = NEXUS_REASON_OK;
+        dec.target_frames = 600; /* equals FullProvider's actual capacity */
+        dec.pressure = 0.30;
+        memset(&in, 0, sizeof(in));
+        in.resource = &res;
+        in.adaptation = &dec;
+        CHECK("collect resize (match) -> OK",
+              nexus_dashboard_collect(&in, FullProvider, NULL, &out) == NEXUS_OK);
+        CHECK("resize applied when actual == target", out.resize.applied == 1);
+        CHECK("render resize applied",
+              (nexus_dashboard_render_text(&out, text, sizeof(text)) == NEXUS_OK) &&
+                  Has(text, "Resize applied:   yes (600 frames)"));
+    }
+
+    /* A HOLD is never an applied resize, even if the numbers coincide. */
+    {
+        nexus_resource_snapshot_t res = Snap(0.05, 4096);
+        nexus_adapt_decision_t dec;
+        nexus_dashboard_metrics_t out;
+        memset(&dec, 0, sizeof(dec));
+        dec.action = NEXUS_ADAPT_HOLD;
+        dec.reason = NEXUS_REASON_WITHIN_BAND;
+        dec.target_frames = 600;
+        dec.pressure = 0.05;
+        memset(&in, 0, sizeof(in));
+        in.resource = &res;
+        in.adaptation = &dec;
+        CHECK("collect hold -> OK",
+              nexus_dashboard_collect(&in, FullProvider, NULL, &out) == NEXUS_OK);
+        CHECK("HOLD is never an applied resize",
+              out.resize.available == 1 && out.resize.applied == 0);
+    }
+
+    /* ---- resource detail lines: attached, cpu limit, PSI, OOM ---- */
+    {
+        nexus_resource_snapshot_t res = Snap(0.50, 1048576);
+        nexus_dashboard_metrics_t out;
+        res.attached = 1;
+        res.has_cpu_limit = 1;
+        res.cpu_quota_us = 20000;
+        res.cpu_period_us = 100000;
+        res.has_pressure = 1;
+        res.pressure_some_avg10 = 3.5;
+        res.has_events = 1;
+        res.oom_events = 2;
+        res.oom_kill_events = 1;
+        memset(&in, 0, sizeof(in));
+        in.resource = &res;
+        CHECK("collect resource detail -> OK",
+              nexus_dashboard_collect(&in, NULL, NULL, &out) == NEXUS_OK);
+        CHECK("render resource detail OK",
+              nexus_dashboard_render_text(&out, text, sizeof(text)) == NEXUS_OK);
+        CHECK("render attached yes", Has(text, "Attached:         yes"));
+        CHECK("render cpu limit as cores", Has(text, "CPU limit:        0.20 cores"));
+        CHECK("render PSI some avg10", Has(text, "Mem PSI (some):   3.50%"));
+        CHECK("render OOM events", Has(text, "OOM events:       2 (kills 1)"));
+    }
+
     printf("\n=== %s (%d failure(s)) ===\n",
            g_failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", g_failures);
     return g_failures == 0 ? 0 : 1;

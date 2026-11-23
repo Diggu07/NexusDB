@@ -440,6 +440,14 @@ static void gated_child_run(struct gated_child_ctx *c)
     (void)close(c->rel1);
     (void)close(c->status0);
 
+    /* A container workload is a service, not a foreground job: when the
+     * launching terminal closes, the kernel sends SIGHUP to the foreground
+     * process group and would otherwise terminate the engine even though it
+     * was moved out of the launcher's cgroup. Ignore it from the moment the
+     * child exists, so even the blocked pre-exec window is immune; the process
+     * then lives until an explicit stop (SIGTERM). */
+    (void)signal(SIGHUP, SIG_IGN);
+
     /* Block until the parent releases (or closes the channel to abort). */
     do {
         n = read(c->rel0, &b, 1);

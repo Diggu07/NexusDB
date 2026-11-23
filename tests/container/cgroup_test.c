@@ -10,6 +10,10 @@
  * Exit 0 on success, 1 on any failure. Same PASS/FAIL style as
  * tests/container/container_test.c.
  */
+#ifndef _WIN32
+#define _DEFAULT_SOURCE /* symlink() for the read-back verification test */
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,6 +103,46 @@ int main(void)
                      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
     CHECK("cgroup_init rejects overlong override", rc == NEXUS_ERR_INVALID);
+    /* Regression: an unusable root (parent that does not exist) must fail loudly
+     * with PROCESS, never silently fall through as if limits were enforced. */
+    rc = cgroup_init("/nonexistent_nexus_parent_xyz/cg");
+    CHECK("cgroup_init unusable root -> PROCESS", rc == NEXUS_ERR_PROCESS);
+    rc = cgroup_init(root);
+    CHECK("cgroup_init restores isolated root", rc == NEXUS_OK);
+
+    /* 1b. Diagnostics are specific and never stale after success. */
+    rc = cgroup_init("/nonexistent_nexus_parent_xyz/cg");
+    CHECK("unusable root reports cgroup detail",
+          rc == NEXUS_ERR_PROCESS && cgroup_last_error()[0] != '\0');
+    rc = cgroup_init(root);
+    CHECK("successful init clears stale cgroup detail",
+          rc == NEXUS_OK && cgroup_last_error()[0] == '\0');
+    CHECK("explicit shim root is treated as delegated",
+          cgroup_self_in_delegated_root() == 1);
+
+    /* 1c. Limit writes are verified by reading the effective value back. A
+     * write to /dev/null succeeds but leaves nothing to read, so set_limits
+     * must fail instead of pretending the limit is enforced. */
+#ifndef _WIN32
+    rc = cgroup_create("cgverify", path, sizeof(path));
+    CHECK("cgroup_create cgverify", rc == NEXUS_OK);
+    {
+        char mem[NEXUS_PATH_MAX + 32];
+        child_path(mem, sizeof(mem), path, "memory.max");
+        (void)remove(mem);
+        if (symlink("/dev/null", mem) == 0) {
+            rc = cgroup_set_limits(path, 4096, 10);
+            CHECK("set_limits rejects non-roundtripping memory.max",
+                  rc == NEXUS_ERR_PROCESS);
+            CHECK("read-back failure names memory.max",
+                  strstr(cgroup_last_error(), "memory.max") != NULL);
+            (void)remove(mem);
+        } else {
+            printf("SKIP: symlink unavailable for read-back test\n");
+        }
+    }
+    (void)cgroup_destroy(path);
+#endif
 
     /* 2. Invalid args. */
     rc = cgroup_create(NULL, path, sizeof(path));
@@ -246,9 +290,85 @@ int main(void)
         child_path(missing, sizeof(missing), root, "does-not-exist");
         rc = cgroup_attach(missing, 12345);
         CHECK("attach missing cgroup -> PROCESS", rc == NEXUS_ERR_PROCESS);
+        CHECK("attach failure names cgroup.procs",
+              strstr(cgroup_last_error(), "cgroup.procs") != NULL);
         rc = cgroup_set_limits(missing, 1024, 10);
         CHECK("set_limits missing cgroup -> PROCESS", rc == NEXUS_ERR_PROCESS);
+        CHECK("set_limits failure names memory.max",
+              strstr(cgroup_last_error(), "memory.max") != NULL);
     }
+
+    /* 7b. cgroup_count_procs distinguishes empty, unreadable, and populated. */
+    rc = cgroup_create("cgcount", path, sizeof(path));
+    CHECK("cgroup_create cgcount", rc == NEXUS_OK);
+    child_path(fp, sizeof(fp), path, "cgroup.procs");
+    (void)remove(fp);
+    CHECK("count_procs unreadable file -> -1", cgroup_count_procs(path) == -1);
+    {
+        FILE *f = fopen(fp, "w");
+        if (f) { fprintf(f, "111\n222\n333\n"); fclose(f); }
+    }
+    CHECK("count_procs counts listed pids", cgroup_count_procs(path) == 3);
+    {
+        FILE *f = fopen(fp, "w"); /* present but empty */
+        if (f) fclose(f);
+    }
+    CHECK("count_procs empty file -> 0", cgroup_count_procs(path) == 0);
+    CHECK("count_procs NULL -> -1", cgroup_count_procs(NULL) == -1);
+    rc = cgroup_destroy(path);
+    CHECK("cgcount destroy", rc == NEXUS_OK);
+
+    /* 7c. Attach verification: membership is observable via count_procs. */
+    rc = cgroup_create("cgattach", path, sizeof(path));
+    CHECK("cgroup_create cgattach", rc == NEXUS_OK);
+    rc = cgroup_attach(path, (long)getpid_compat());
+    CHECK("attach live self", rc == NEXUS_OK);
+    CHECK("attached cgroup reports >=1 proc", cgroup_count_procs(path) >= 1);
+    child_path(fp, sizeof(fp), path, "cgroup.procs");
+    (void)remove(fp);
+    rc = cgroup_destroy(path);
+    CHECK("cgattach destroy", rc == NEXUS_OK);
+
+    /* 7d. Extended optional metrics parse when present; absent -> flags 0. */
+    rc = cgroup_create("cgext", path, sizeof(path));
+    CHECK("cgroup_create cgext", rc == NEXUS_OK);
+    rc = cgroup_set_limits(path, 1024, 25);
+    CHECK("cgext limits", rc == NEXUS_OK);
+    write_metric(path, "memory.current", "1024");
+    write_metric(path, "cpu.max", "25000 100000");
+    write_metric(path, "memory.pressure",
+                 "some avg10=1.25 avg60=0.50 avg300=0.10 total=1234");
+    write_metric(path, "memory.events",
+                 "low 0\nhigh 0\nmax 3\noom 2\noom_kill 1");
+    rc = cgroup_read_metrics(path, &m);
+    CHECK("read_metrics cgext OK", rc == NEXUS_OK);
+    CHECK("cpu.max quota parsed",
+          m.has_cpu_limit == 1 && m.cpu_quota_us == 25000UL);
+    CHECK("cpu.max period parsed", m.cpu_period_us == 100000UL);
+    CHECK("memory.pressure some avg10 parsed",
+          m.has_pressure == 1 && m.pressure_some_avg10 > 1.2 &&
+              m.pressure_some_avg10 < 1.3);
+    CHECK("memory.events oom counters parsed",
+          m.has_memory_events == 1 && m.memory_oom_events == 2 &&
+              m.memory_oom_kill_events == 1);
+    /* cpu.max = "max" means unlimited: no finite limit (still readable). */
+    write_metric(path, "cpu.max", "max 100000");
+    rc = cgroup_read_metrics(path, &m);
+    CHECK("cpu.max 'max' -> no finite limit",
+          rc == NEXUS_OK && m.has_cpu_limit == 0 && m.cpu_quota_us == 0);
+    /* Remove the optional files: flags must read 0, not fabricated values. */
+    child_path(fp, sizeof(fp), path, "cpu.max");
+    (void)remove(fp);
+    child_path(fp, sizeof(fp), path, "memory.pressure");
+    (void)remove(fp);
+    child_path(fp, sizeof(fp), path, "memory.events");
+    (void)remove(fp);
+    rc = cgroup_read_metrics(path, &m);
+    CHECK("absent optional files -> flags 0",
+          rc == NEXUS_OK && m.has_cpu_limit == 0 && m.has_pressure == 0 &&
+              m.has_memory_events == 0);
+    rc = cgroup_destroy(path);
+    CHECK("cgext destroy", rc == NEXUS_OK);
 
     /* 8. Cleanup cg1 + root. */
     {

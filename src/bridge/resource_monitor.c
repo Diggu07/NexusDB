@@ -26,20 +26,30 @@ static void child_path(char *buf, size_t len, const char *dir, const char *file)
 #endif
 }
 
-/* 1 when <dir>/cpu.stat can be opened for reading. The cgroup controller
- * treats cpu.stat as optional (missing -> usage 0); we surface its presence
- * explicitly so the dashboard can show "unavailable" instead of a fake 0. */
+/* 1 when <dir>/cpu.stat provides a usable usage_usec reading. The cgroup
+ * controller treats cpu.stat as optional (missing -> usage 0); we surface its
+ * presence explicitly so the dashboard can show "unavailable" instead of a
+ * fake 0. */
 static int cpu_stat_present(const char *dir)
 {
     char path[NEXUS_PATH_MAX + 32];
+    char key[64];
+    unsigned long value = 0;
     FILE *f;
+    int found = 0;
 
     child_path(path, sizeof(path), dir, "cpu.stat");
     f = fopen(path, "r");
     if (f == NULL)
         return 0;
+    while (fscanf(f, "%63s %lu", key, &value) == 2) {
+        if (strcmp(key, "usage_usec") == 0) {
+            found = 1;
+            break;
+        }
+    }
     fclose(f);
-    return 1;
+    return found;
 }
 
 int nexus_bridge_read_cgroup(const char *cgroup_dir,
@@ -67,6 +77,23 @@ int nexus_bridge_read_cgroup(const char *cgroup_dir,
     out->has_cpu = cpu_stat_present(cgroup_dir);
     out->cpu_usage_usec = out->has_cpu ? m.cpu_usage_usec : 0;
     out->memory_pressure = m.memory_pressure;
+
+    /* Membership: >0 means a workload is actually charged to this cgroup. -1
+     * (file unreadable) is reported as not-attached rather than as an error so
+     * an otherwise-good memory snapshot is still usable. */
+    {
+        int count = cgroup_count_procs(cgroup_dir);
+        out->attached = (count > 0) ? 1 : 0;
+    }
+
+    out->has_cpu_limit = m.has_cpu_limit;
+    out->cpu_quota_us = m.cpu_quota_us;
+    out->cpu_period_us = m.cpu_period_us;
+    out->has_pressure = m.has_pressure;
+    out->pressure_some_avg10 = m.pressure_some_avg10;
+    out->has_events = m.has_memory_events;
+    out->oom_events = m.memory_oom_events;
+    out->oom_kill_events = m.memory_oom_kill_events;
     return NEXUS_OK;
 }
 

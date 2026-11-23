@@ -20,9 +20,11 @@
 //      <data_root>/N/nexusdb.db (exactly the directory the runtime passes to
 //      the configured db_engine as `--data-dir <root>/N`).
 //
-// No client/server protocol exists. A running container's db_engine holds the
-// database open, so database commands REFUSE to run while the container is
-// RUNNING (they would race the engine's page writes). Stop the container first.
+// A running container's db_engine holds the database open, so the Router routes
+// database commands through EngineRequest() -- a small newline-delimited
+// protocol on the engine's Unix-domain control socket -- instead of opening the
+// files directly (which would race the engine's page writes). When the container
+// is stopped the Manager opens the database directly, running WAL recovery.
 //
 // Error convention: every fallible call returns Status (common/error.h); no
 // exception escapes. kInvalidArgument/kNotFound carry user-facing meaning; the
@@ -77,9 +79,44 @@ class Manager {
                          unsigned int cpu_percent, const std::string& engine);
 
   Status ContainerStart(const std::string& name);
+  // After a successful start of an engine-backed container, start waits until
+  // the engine's control socket answers a `ping`: the runtime only guarantees
+  // a successful exec, so start confirms initialization and reverts the
+  // container to STOPPED if the engine exited or never began serving.
   Status ContainerStop(const std::string& name);
   Status ContainerDelete(const std::string& name);
   Status ContainerStatus(const std::string& name, std::string* out);
+
+  // Lightweight summary of one persisted container, for `nexusdb list`.
+  struct ContainerInfo {
+    std::string name;
+    std::string id;
+    int state = 0;
+    long pid = -1;
+    unsigned long memory_bytes = 0;
+    unsigned int cpu_percent = 0;
+    std::string engine;
+  };
+  // Enumerates persisted containers (the source of truth across CLI processes).
+  Status ListContainers(std::vector<ContainerInfo>* out) const;
+
+  // True when the persisted metadata says the container is RUNNING. Used by the
+  // Router to decide whether a database command must go through the running
+  // engine's control socket instead of opening the database file directly.
+  bool ContainerIsRunning(const std::string& name) const;
+  bool EngineAlive(const std::string& name) const;
+  Status MarkContainerStopped(const std::string& name) const;
+
+  // Sends one newline-delimited request to the container engine's control
+  // socket (`<data_root>/<name>/nexusdb.sock`, or the path recorded in that
+  // directory's `nexusdb.sock.path` marker when the engine had to relocate the
+  // socket to a filesystem that hosts Unix sockets) and returns its raw
+  // response (including the trailing newline). Retries briefly so a command
+  // issued right after `start` does not race the engine's bind. On POSIX only;
+  // on Windows it returns kBadState (the CLI is a one-shot process with no IPC
+  // there).
+  Status EngineRequest(const std::string& name, const std::string& request,
+                       std::string* response) const;
 
   // ---- Database operations (routed through Database/QueryExecutor) ----
 

@@ -61,6 +61,40 @@ static int g_fail = 0;
     else      { g_fail++; printf("  FAIL: %s\n", (desc)); } \
 } while (0)
 
+/* ---- environment capability probe (Linux only) ---- */
+
+#ifndef _WIN32
+/* 1 when a real, writable kernel cgroup2 subtree is available (kernel files
+ * present, a limit write accepted). The container lifecycle requires cgroup
+ * provisioning; without this the demo reports ENV-LIMITED instead of recording
+ * failures for an environment limitation it cannot fix. */
+static int cgroup_kernel_available(void)
+{
+    char probe[NEXUS_PATH_MAX];
+    char f[NEXUS_PATH_MAX + 32];
+    FILE *fp;
+    int ok;
+
+    if (cgroup_init(NULL) != NEXUS_OK)
+        return 0;
+    /* Writable alone is not enough: the child can only be attached when this
+     * process is inside the delegated subtree (e.g. systemd-run --user). */
+    if (!cgroup_self_in_delegated_root())
+        return 0;
+    if (cgroup_create("nexus_demo_probe", probe, sizeof(probe)) != NEXUS_OK)
+        return 0;
+    snprintf(f, sizeof(f), "%s/cgroup.controllers", probe);
+    fp = fopen(f, "r");
+    ok = (fp != NULL);
+    if (fp != NULL)
+        fclose(fp);
+    if (ok && cgroup_set_limits(probe, 64UL * 1024 * 1024, 25) != NEXUS_OK)
+        ok = 0;
+    (void)cgroup_destroy(probe);
+    return ok;
+}
+#endif
+
 /* ---- reliable cleanup: never leave a placeholder child running ---- */
 
 #define MAX_TRACKED 4
@@ -117,6 +151,20 @@ int main(void)
     printf("(uses the real container API; placeholder child process only)\n\n");
     printf("Container name: %s\n\n", name);
 
+#ifndef _WIN32
+    /* The lifecycle needs both a writable cgroup root and permission to
+     * migrate the child into it. Without a delegated scope, report the
+     * environment limitation before creating anything. */
+    if (!cgroup_kernel_available()) {
+        printf("ENV-LIMITED: no usable delegated cgroup v2 subtree.\n"
+               "  Run inside a delegated scope, e.g.:\n"
+               "    systemd-run --user --scope -- %s\n",
+               "container_engine_demo");
+        printf("\n=== ENV-LIMITED (0 failure(s)) ===\n");
+        return 0;
+    }
+#endif
+
     /* ------------------------------------------------------------------ */
     printf("[1] Configuration validation (real container_create returns)\n");
 
@@ -145,6 +193,26 @@ int main(void)
      * keeping this demo self-contained (the configured-engine launch path is
      * covered by tests/container/container_test.c). */
     rc = container_create(name, 256UL * 1024 * 1024, 50, NULL);
+#ifndef _WIN32
+    /* If the create failed because the environment has no writable kernel
+     * cgroup, that is an environment limitation, not a lifecycle bug: report
+     * it explicitly and exit cleanly rather than recording false FAILs. A
+     * create failure on an otherwise-usable root is a real bug and still
+     * fails below. */
+    if (rc != NEXUS_OK && !cgroup_kernel_available()) {
+        printf("\nENV-LIMITED: no writable kernel cgroup v2 root "
+               "(container_create -> %s).\n"
+               "  The container lifecycle requires cgroup provisioning. Run "
+               "inside a\n  delegated cgroup scope, e.g.:\n"
+               "    systemd-run --user --scope env "
+               "NEXUS_CGROUP_ROOT=<writable-cgroup> %s\n",
+               container_strerror(rc), "container_engine_demo");
+        cleanup_all();
+        printf("\n=== ENV-LIMITED: %d/%d checks passed, %d failed ===\n",
+               g_pass, g_pass + g_fail, g_fail);
+        return 0;
+    }
+#endif
     CHECK("create valid container returns NEXUS_OK", rc == NEXUS_OK);
 
     c = container_get(name);

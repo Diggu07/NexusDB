@@ -62,6 +62,22 @@ typedef struct nexus_dashboard_inputs {
     const nexus_adapt_decision_t *adaptation;   /* NULL => unavailable */
 } nexus_dashboard_inputs_t;
 
+/*
+ * End-to-end resize outcome. Distinguishes the bridge's recommendation from an
+ * engine-applied resize so a recommendation that did not take effect cannot be
+ * rendered as success. `applied` is only 1 when the decision asked for a
+ * GROW/SHRINK AND the engine's reported pool capacity equals the target.
+ */
+typedef struct nexus_resize_outcome {
+    int available;               /* a decision and/or engine pool is present */
+    nexus_adapt_action_t action; /* last decision action */
+    unsigned long target_frames; /* capacity the bridge requested */
+    int has_actual;              /* engine pool capacity is known */
+    unsigned long actual_frames; /* engine pool capacity right now */
+    int applied;                 /* has_actual && GROW/SHRINK && actual == target */
+    nexus_adapt_reason_t reason; /* why the decision was made */
+} nexus_resize_outcome_t;
+
 typedef struct nexus_dashboard_metrics {
     int has_resource;
     nexus_resource_snapshot_t resource;
@@ -73,6 +89,8 @@ typedef struct nexus_dashboard_metrics {
     nexus_adapt_decision_t adaptation;
 
     nexus_engine_metrics_t engine; /* inner has_* flags carry availability */
+
+    nexus_resize_outcome_t resize; /* availability carried in `resize.available` */
 } nexus_dashboard_metrics_t;
 
 /* Zero a metrics struct: all optional groups unavailable. */

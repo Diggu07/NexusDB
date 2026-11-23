@@ -153,6 +153,10 @@ RECOVERY_OBJS := $(BUILD_DIR)/page.o \
                  $(BUILD_DIR)/database.o \
                  $(BUILD_DIR)/recovery_test.o
 
+# R2 DB durability regression test (AUD-01) (Digvijay): fsync WAL/page writes, C++17.
+DURABILITY_TEST_BIN := $(BUILD_DIR)/nexusdb_durability_test$(EXE)
+DURABILITY_OBJS = $(DB_STACK_OBJS) $(BUILD_DIR)/durability_test.o
+
 # R3 Manager/Router + CLI (Digvijay): coordinates the container runtime and the
 # database engine; the CLI is the end-to-end entry point, C++17.
 DB_STACK_OBJS := $(BUILD_DIR)/page.o \
@@ -173,7 +177,7 @@ CONTAINER_STACK_OBJS := $(BUILD_DIR)/container.o \
 MANAGER_OBJS := $(BUILD_DIR)/manager.o \
                 $(BUILD_DIR)/router.o
 
-CLI_BIN := $(BUILD_DIR)/nexusdb_cli$(EXE)
+CLI_BIN := $(BUILD_DIR)/nexusdb$(EXE)
 CLI_OBJS := $(DB_STACK_OBJS) $(MANAGER_OBJS) $(CONTAINER_STACK_OBJS) \
             $(BUILD_DIR)/nexusdb_cli.o
 
@@ -308,7 +312,7 @@ BENCH_ENGINE_OBJS := $(BUILD_DIR)/harness.o \
                      $(BUILD_DIR)/buffer_pool.o \
                      $(BUILD_DIR)/benchmark_main_engine.o
 
-all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
+all: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(DURABILITY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN) $(BENCH_STUB_BIN)
 
 $(BUILD_DIR):
 ifeq ($(OS),Windows_NT)
@@ -398,7 +402,7 @@ $(BUILD_DIR)/dashboard_test.o: tests/dashboard/dashboard_test.c include/dashboar
 $(DASH_TEST_BIN): $(DASH_OBJS)
 	$(CC) $(CFLAGS) $(DASH_OBJS) -o $@
 
-$(BUILD_DIR)/dashboard_demo.o: examples/dashboard/dashboard_demo.c include/dashboard/dashboard.h include/dashboard/metrics.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/dashboard_demo.o: examples/dashboard/dashboard_demo.c include/dashboard/dashboard.h include/dashboard/metrics.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(DASH_DEMO_BIN): $(DASH_DEMO_OBJS)
@@ -407,7 +411,7 @@ $(DASH_DEMO_BIN): $(DASH_DEMO_OBJS)
 # Optional live ncurses UI (Linux/WSL2 + libncurses-dev). Kept out of
 # all/test: the default build works without ncurses. Requires the demo and the
 # ncurses renderer compiled with -DNEXUS_HAVE_NCURSES.
-$(BUILD_DIR)/dashboard_demo_nc.o: examples/dashboard/dashboard_demo.c include/dashboard/dashboard.h include/dashboard/metrics.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h include/container/container.h | $(BUILD_DIR)
+$(BUILD_DIR)/dashboard_demo_nc.o: examples/dashboard/dashboard_demo.c include/dashboard/dashboard.h include/dashboard/metrics.h include/bridge/adaptation_policy.h include/bridge/resource_monitor.h include/container/container.h include/container/cgroup.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DNEXUS_HAVE_NCURSES -c $< -o $@
 
 $(BUILD_DIR)/dashboard_ncurses.o: src/dashboard/dashboard_ncurses.c include/dashboard/dashboard.h include/dashboard/metrics.h | $(BUILD_DIR)
@@ -522,6 +526,12 @@ $(BUILD_DIR)/recovery_test.o: tests/db/recovery_test.cpp include/db/database.h i
 $(RECOVERY_TEST_BIN): $(RECOVERY_OBJS)
 	$(CXX) $(CXXFLAGS) $(RECOVERY_OBJS) -o $@
 
+$(BUILD_DIR)/durability_test.o: tests/db/durability_test.cpp include/db/database.h include/db/wal.h include/db/buffer_pool.h include/db/query_executor.h include/db/catalog.h include/db/heap_table.h include/db/page.h include/db/page_storage.h include/common/config.h include/common/error.h include/common/durable.h | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(DURABILITY_TEST_BIN): $(DURABILITY_OBJS)
+	$(CXX) $(CXXFLAGS) $(DURABILITY_OBJS) -o $@
+
 $(BUILD_DIR)/manager.o: src/manager/manager.cpp include/manager/manager.h include/db/database.h include/db/query_executor.h include/db/catalog.h include/db/heap_table.h include/db/page.h include/db/page_storage.h include/common/error.h include/container/container.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -591,7 +601,7 @@ $(BUILD_DIR)/mem_enforce_test.o: tests/container/mem_enforce_test.c include/cont
 $(MEM_ENFORCE_BIN): $(MEM_ENFORCE_OBJS) $(MEM_WORKLOAD_BIN)
 	$(CC) $(CFLAGS) $(MEM_ENFORCE_OBJS) -o $@
 
-test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN)
+test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BIN) $(NS_TEST_BIN) $(DB_TEST_BIN) $(SLOTTED_TEST_BIN) $(HEAP_TEST_BIN) $(CATALOG_TEST_BIN) $(QUERY_TEST_BIN) $(WAL_TEST_BIN) $(RECOVERY_TEST_BIN) $(DURABILITY_TEST_BIN) $(MANAGER_TEST_BIN) $(BUFFER_TEST_BIN) $(CLI_BIN) $(CLI_TEST_BIN) $(CONTAINER_DEMO_BIN) $(ENGINE_BIN) $(ENG_TEST_BIN) $(CPU_WORKLOAD_BIN) $(MEM_WORKLOAD_BIN) $(CPU_ENFORCE_BIN) $(MEM_ENFORCE_BIN) $(BRIDGE_TEST_BIN) $(POLICY_TEST_BIN) $(DASH_TEST_BIN) $(DASH_DEMO_BIN) $(ENGINE_ADAPT_TEST_BIN) $(HARNESS_TEST_BIN)
 	$(TEST_BIN)
 	$(CGROUP_TEST_BIN)
 	$(PROCESS_TEST_BIN)
@@ -604,6 +614,7 @@ test: $(TEST_BIN) $(CGROUP_TEST_BIN) $(PROCESS_TEST_BIN) $(MEMORY_BRIDGE_TEST_BI
 	$(QUERY_TEST_BIN)
 	$(WAL_TEST_BIN)
 	$(RECOVERY_TEST_BIN)
+	$(DURABILITY_TEST_BIN)
 	$(MANAGER_TEST_BIN)
 	$(BUFFER_TEST_BIN)
 	$(CLI_TEST_BIN)

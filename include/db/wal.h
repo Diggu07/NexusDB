@@ -29,12 +29,29 @@
 //
 // Durability boundary
 // -------------------
-//   "Durable" here means flushed to the operating system (std::fstream::flush),
-//   exactly the guarantee PageStorage::WritePage documents. This survives a
-//   process crash (including _exit / SIGKILL); it does NOT by itself survive an
-//   OS crash or power loss, which would additionally require fsync. The WAL and
-//   the database file share this boundary, so ordering between them is
-//   preserved across process crashes.
+//   "Durable" here means the record's bytes have been synchronized to the
+//   underlying storage: Wal::Flush() flushes the C++ stream and then calls
+//   fsync() (POSIX) on the log file, so an acknowledged append survives an
+//   OS crash / power loss, assuming the filesystem and storage honor fsync().
+//   PageStorage::WritePage() synchronizes the database file the same way,
+//   and BufferPool::FlushFrame enforces the write-ahead rule
+//   (WAL-sync-before-page-sync), so a modification reported as durable is
+//   durable in both the log and the database file.
+//
+//   What remains outside the guarantee:
+//     - The guarantee holds only insofar as the filesystem and storage
+//       device honor fsync(); some drives report success before the bytes
+//       reach non-volatile media.
+//     - fsync() makes the named file durable, not newly created directory
+//       entries; database-creation/rename publication does not fsync the
+//       parent directory.
+//     - A dirty page that is never flushed (and therefore never logged) is
+//       not recovered; that is expected, as it was never made durable.
+//
+//   This survives a process crash (including _exit / SIGKILL) and an OS
+//   crash / power loss (assuming fsync is honored). The WAL and the database
+//   file share this boundary, so ordering between them is preserved across
+//   crashes.
 //
 // On-disk record format (little-endian), version 1
 // ------------------------------------------------

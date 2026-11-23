@@ -494,6 +494,9 @@ int container_metrics(const char *name, nexus_cgroup_metrics_t *metrics)
 
     if (!name_valid(name) || metrics == NULL)
         return NEXUS_ERR_INVALID;
+    /* Never expose stale/uninitialized caller memory on an error return: the
+     * struct is zeroed before any lookup or read that could fail. */
+    memset(metrics, 0, sizeof(*metrics));
     s = find_slot(name);
     if (s == NULL)
         return NEXUS_ERR_NOT_FOUND;
@@ -510,6 +513,9 @@ int container_status(const char *name, char *buf, size_t buflen)
 
     if (!name_valid(name) || buf == NULL || buflen == 0)
         return NEXUS_ERR_INVALID;
+    /* Deterministic: a failed lookup leaves an empty string, never the caller's
+     * pre-existing (possibly uninitialized) bytes. */
+    buf[0] = '\0';
     s = find_slot(name);
     if (s == NULL)
         return NEXUS_ERR_NOT_FOUND;

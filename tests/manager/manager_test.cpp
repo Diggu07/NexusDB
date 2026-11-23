@@ -24,6 +24,11 @@
 #include "manager/router.h"
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <errno.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #elif defined(_WIN32)
 #include <process.h>
@@ -78,6 +83,55 @@ void RemoveAll(const std::string& path) {
 bool Contains(const std::string& hay, const std::string& needle) {
   return hay.find(needle) != std::string::npos;
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+// Serves exactly one newline request on `socket_path`, replies "OK pong\n",
+// unlinks the socket file, and exits 0. Runs in a forked helper process.
+void ServePings(const std::string& socket_path) {
+  sockaddr_un addr;
+  char buf[256];
+  const int lfd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (lfd < 0)
+    _exit(1);
+  std::memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  if (socket_path.size() >= sizeof(addr.sun_path))
+    _exit(1);
+  std::memcpy(addr.sun_path, socket_path.c_str(), socket_path.size() + 1);
+  (void)::unlink(socket_path.c_str());
+  if (::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    _exit(1);
+  if (::listen(lfd, 2) != 0)
+    _exit(1);
+  const int cfd = ::accept(lfd, nullptr, nullptr);
+  if (cfd >= 0) {
+    const ssize_t n = ::read(cfd, buf, sizeof(buf));
+    if (n > 0)
+      (void)::write(cfd, "OK pong\n", 8);
+    ::close(cfd);
+  }
+  ::close(lfd);
+  (void)::unlink(socket_path.c_str());
+  _exit(0);
+}
+
+// Reaps the forked server helper without ever hanging or leaking it.
+// `unblock` is set when the exchange failed, i.e. the helper is presumed
+// still blocked in accept(): only then is it signaled, and only if it has
+// not already exited (waitpid(WNOHANG) reaps an already-finished child, so
+// a signaled pid is always a live one). A blocking waitpid retries on
+// EINTR so an interrupted reap cannot silently drop the child.
+void ReapServer(pid_t pid, bool unblock) {
+  int status = 0;
+  const pid_t first = ::waitpid(pid, &status, WNOHANG);
+  if (first == pid)
+    return;
+  if (first == 0 && unblock)
+    (void)::kill(pid, SIGTERM);
+  while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  }
+}
+#endif
 
 std::string MakeBytes(std::initializer_list<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.begin()), bytes.size());
@@ -231,13 +285,84 @@ int main() {
   CHECK("scan after delete", mgr.Scan("db1", "t1", &after_del).ok());
   CHECK("one record remains", after_del.size() == 1);
 
-  // ---- RUNNING guard (no cgroup needed: synthesized metadata) ----
+  // ---- RUNNING guard at the Manager level (no cgroup needed: synthesized
+  // metadata). The Router proxies to the engine instead of calling these
+  // directly, but the guard remains the safety net for accidental misuse. ----
   WriteRunningMeta(root, "run1", 1 /* RUNNING */);
   CHECK("database op refused while container RUNNING",
         mgr.DbInit("run1").code == DbError::kBadState);
   WriteRunningMeta(root, "run1", 2 /* STOPPED */);
   CHECK("database op allowed when STOPPED", mgr.DbInit("run1").ok());
   RemoveAll(root + "/.nexus/containers/run1.meta");
+
+#if defined(__unix__) || defined(__APPLE__)
+  // ---- EngineRequest: newline protocol over a real Unix control socket ----
+  // Variant 0 covers the default <data-dir>/nexusdb.sock location; variant 1
+  // covers discovery via the engine's relocation marker
+  // (<data-dir>/nexusdb.sock.path), which the engine writes when the data
+  // directory's filesystem cannot host Unix sockets.
+  {
+    // EngineRequest("socktest-db", ...) resolves its control socket through
+    // DbDir("socktest-db") == <data-root>/socktest-db, so every path below
+    // must live in that exact directory -- a sibling directory would make
+    // connect() fail with ENOENT and leave the helper blocked in accept().
+    const std::string sock_root = mgr.DbDir("socktest-db");
+    std::error_code sec;
+    std::filesystem::create_directories(sock_root, sec);
+    CHECK("socket test directory created",
+          std::filesystem::is_directory(sock_root, sec));
+    const std::string default_sock = sock_root + "/nexusdb.sock";
+    const std::string relocated_sock = sock_root + "/relocated.sock";
+    const std::string marker = sock_root + "/nexusdb.sock.path";
+    (void)std::filesystem::remove(default_sock, sec);
+    (void)std::filesystem::remove(relocated_sock, sec);
+    (void)std::filesystem::remove(marker, sec);
+
+    for (int variant = 0; variant < 2; ++variant) {
+      if (variant == 1) {
+        // Variant 0's helper unlinked the default socket on exit; publish a
+        // relocation marker (with CRLF, exercising the trim) so the client
+        // has to discover relocated.sock through it.
+        std::ofstream mout(marker, std::ios::trunc);
+        mout << relocated_sock << "\r\n";
+      }
+      const std::string server_path =
+          (variant == 0) ? default_sock : relocated_sock;
+      (void)std::fflush(nullptr);
+      const pid_t server = ::fork();
+      if (server < 0) {
+        CHECK(variant == 0 ? "EngineRequest ping over primary control socket"
+                           : "EngineRequest ping discovers relocated socket "
+                             "via marker",
+              false);
+        continue;
+      }
+      if (server == 0) {
+        ServePings(server_path); /* exits; never returns */
+        _exit(1);
+      }
+      std::string pong;
+      const Status es = mgr.EngineRequest("socktest-db", "ping", &pong);
+      const bool served = es.ok() && Contains(pong, "OK pong");
+      CHECK(variant == 0 ? "EngineRequest ping over primary control socket"
+                         : "EngineRequest ping discovers relocated socket "
+                           "via marker",
+            served);
+      if (!served) {
+        if (es.ok())
+          std::printf("  detail: unexpected response: %s\n", pong.c_str());
+        else
+          std::printf("  detail: %s\n", es.message.c_str());
+      }
+      // On failure the helper never got a connection and is still blocked in
+      // accept(): ReapServer unblocks it so the reap cannot hang, and the
+      // leftover socket file (which a signaled helper never unlinks) must
+      // not leak into the next variant.
+      ReapServer(server, !served);
+      (void)std::filesystem::remove(server_path, sec);
+    }
+  }
+#endif
 
   // ---- container metadata persistence routed through the runtime ----
   CHECK("container create", mgr.ContainerCreate("c1", 0, 0, "").ok());
@@ -293,6 +418,49 @@ int main() {
   CHECK("parse container start", ParseArgs({"container", "start", "c9"}, &cmd,
                                            &err) == 0 &&
                                    cmd.kind == CommandKind::kContainerStart);
+
+  // ---- Router shortcuts, memory units, help topics, delete disambiguation ----
+  CHECK("parse create alias + units",
+        ParseArgs({"create", "c9", "--memory", "256M", "--cpu-percent", "25"},
+                  &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kContainerCreate &&
+            cmd.memory == 268435456UL && cmd.cpu == 25);
+  CHECK("parse create 1G",
+        ParseArgs({"create", "c9", "--memory", "1G"}, &cmd, &err) == 0 &&
+            cmd.memory == 1073741824UL);
+  CHECK("parse create 1gb lowercase",
+        ParseArgs({"create", "c9", "--memory", "1gb"}, &cmd, &err) == 0 &&
+            cmd.memory == 1073741824UL);
+  CHECK("parse create plain bytes",
+        ParseArgs({"create", "c9", "--memory", "4096"}, &cmd, &err) == 0 &&
+            cmd.memory == 4096UL);
+  CHECK("parse create --no-engine",
+        ParseArgs({"create", "c9", "--no-engine"}, &cmd, &err) == 0 &&
+            cmd.engine.empty() && cmd.engine_explicit);
+  CHECK("parse create bad unit -> invalid",
+        ParseArgs({"create", "c9", "--memory", "16Q"}, &cmd, &err) == 3);
+  CHECK("parse create fractional unit -> invalid",
+        ParseArgs({"create", "c9", "--memory", "1.5G"}, &cmd, &err) == 3);
+  CHECK("parse create unknown flag -> usage",
+        ParseArgs({"create", "c9", "--bogus", "1"}, &cmd, &err) == 2);
+  CHECK("parse list",
+        ParseArgs({"list"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kContainerList);
+  CHECK("parse exec",
+        ParseArgs({"exec", "c9", "ping"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kContainerExec && cmd.request == "ping");
+  CHECK("parse delete <name> = container",
+        ParseArgs({"delete", "c9"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kContainerDelete && cmd.name == "c9");
+  CHECK("parse delete <name> <t> <p> <s> = record",
+        ParseArgs({"delete", "db1", "t1", "1", "0"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kDelete && cmd.page == 1 && cmd.slot == 0);
+  CHECK("parse create --help topic",
+        ParseArgs({"create", "--help"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kHelp && cmd.help_topic == "create");
+  CHECK("parse status --help topic",
+        ParseArgs({"status", "--help"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kHelp && cmd.help_topic == "status");
 
   // ---- Router numeric boundary / overflow parsing ----
   // Page ids: kInvalidId (0xFFFFFFFF) is reserved and rejected; the largest

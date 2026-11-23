@@ -46,6 +46,22 @@ int nexus_dashboard_collect(const nexus_dashboard_inputs_t *inputs,
         /* provider failure => engine stays unavailable; nothing fabricated */
     }
 
+    /* Correlate the decision with the engine's current capacity. Only a real
+     * GROW/SHRINK whose target the engine already reflects counts as applied. */
+    if (out->has_adaptation) {
+        out->resize.available = 1;
+        out->resize.action = out->adaptation.action;
+        out->resize.target_frames = out->adaptation.target_frames;
+        out->resize.reason = out->adaptation.reason;
+        if (out->engine.has_pool) {
+            out->resize.has_actual = 1;
+            out->resize.actual_frames = out->engine.pool_actual_frames;
+            if (out->adaptation.action != NEXUS_ADAPT_HOLD &&
+                out->engine.pool_actual_frames == out->adaptation.target_frames)
+                out->resize.applied = 1;
+        }
+    }
+
     return NEXUS_OK;
 }
 

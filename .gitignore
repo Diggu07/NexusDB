@@ -71,4 +71,8 @@ Testing/
 # Runtime artifacts (generated locally, never committed)
 data/
 logs/
+demo_data/
+nexusdb_data/
 *.db
+*.sock
+*.sock.path

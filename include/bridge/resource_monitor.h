@@ -59,6 +59,24 @@ typedef struct nexus_resource_snapshot {
     unsigned long memory_max;
     unsigned long cpu_usage_usec;
     double memory_pressure;
+
+    /* cgroup.membership: 1 when the cgroup owns at least one process. A limit
+     * read while attached == 0 is CONFIGURED BUT NOT ENFORCED on any workload,
+     * so the dashboard must not present it as a measured, live limit. */
+    int attached;
+
+    /* cpu.max quota/period (microseconds). has_cpu_limit == 1 only for a finite
+     * quota; cpu_quota_us == 0 with has_cpu_limit == 0 means unlimited. */
+    int has_cpu_limit;
+    unsigned long cpu_quota_us;
+    unsigned long cpu_period_us;
+
+    /* memory.pressure PSI "some avg10" (percent) and memory.events OOM counters. */
+    int has_pressure;
+    double pressure_some_avg10;
+    int has_events;
+    unsigned long oom_events;
+    unsigned long oom_kill_events;
 } nexus_resource_snapshot_t;
 
 /*

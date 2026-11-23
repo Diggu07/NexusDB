@@ -247,6 +247,18 @@ int main(void)
                    rc);
             return 0;
         }
+        /* Writing limits is not enough: this process must be inside the
+         * delegated subtree so the gated workload can be migrated into the
+         * cgroup. Running ctest from /non-systemd cannot do that. */
+        if (!cgroup_self_in_delegated_root()) {
+            printf("ENV-LIMITED: current process is outside the delegated "
+                   "cgroup subtree; run inside `systemd-run --user --scope`.\n");
+            return 0;
+        }
+        memset(d_base, 0, sizeof(d_base));
+        memset(d_lim, 0, sizeof(d_lim));
+        memset(w_base, 0, sizeof(w_base));
+        memset(w_lim, 0, sizeof(w_lim));
         snprintf(base_name, sizeof(base_name), "nexus_p4_cpu_base_%d",
                  getpid_compat());
         snprintf(lim_name, sizeof(lim_name), "nexus_p4_cpu_lim_%d",

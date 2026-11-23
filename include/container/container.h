@@ -24,9 +24,9 @@
  *   - Database internals (Digvijay): SQL, pages, buffer pool, LRU, WAL.
  *
  * PORTABILITY:
- *   Real deployment target is Ubuntu/WSL2 (Linux). This dev machine has no
- *   WSL, so src/container/process.c has a Windows branch so the lifecycle
- *   demo compiles/runs here too. The Linux branch uses fork/exec/waitpid.
+ *   Real deployment target is Ubuntu/WSL2 (Linux). src/container/process.c
+ *   also has a Windows branch so the lifecycle demo compiles/runs where WSL2
+ *   is unavailable. The Linux branch uses fork/exec/waitpid.
  */
 #ifndef NEXUS_CONTAINER_H
 #define NEXUS_CONTAINER_H

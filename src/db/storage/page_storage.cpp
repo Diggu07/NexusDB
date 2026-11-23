@@ -12,6 +12,8 @@
 #include <system_error>
 #include <utility>
 
+#include "common/durable.h"
+
 namespace nexusdb {
 namespace {
 
@@ -171,6 +173,11 @@ Status PageStorage::WritePage(const Page& page) {
     return Status::Error(DbError::kIoError,
                          "write failed on page " + std::to_string(page.id()));
   }
+  // Synchronize the page bytes to storage so a successful write is durable.
+  s = nexusdb::FsyncFile(path_);
+  if (!s.ok()) {
+    return s;  // leave the page dirty so the write can be retried
+  }
   // Note: the caller's dirty flag is left untouched — dirty lifecycle is
   // owned by the future Buffer Pool, not by storage.
   return Status::Ok();
@@ -204,6 +211,11 @@ Status PageStorage::AllocatePage(Page* out) {
   file_.flush();
   if (!file_) {
     return Status::Error(DbError::kIoError, "extend failed on allocate");
+  }
+  // Synchronize the extended file so the new page allocation is durable.
+  s = nexusdb::FsyncFile(path_);
+  if (!s.ok()) {
+    return s;
   }
 
   *out = page;  // zeroed, clean, id == pre-allocation page count
@@ -244,6 +256,11 @@ Status PageStorage::Flush() {
   file_.flush();
   if (!file_) {
     return Status::Error(DbError::kIoError, "flush failed");
+  }
+  // Synchronize the file so flushed pages are durable.
+  Status s = nexusdb::FsyncFile(path_);
+  if (!s.ok()) {
+    return s;
   }
   return Status::Ok();
 }

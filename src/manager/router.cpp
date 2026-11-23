@@ -1,10 +1,17 @@
 // NexusDB — command Router implementation (Digvijay: Manager/Router, R3).
 #include "manager/router.h"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
 #include <limits>
+#include <string>
 #include <utility>
+
+#include "container/container.h"
 
 namespace nexusdb {
 namespace cli {
@@ -70,6 +77,64 @@ bool ParseUint(const std::string& text, std::uint64_t max, std::uint64_t* out) {
   return true;
 }
 
+// Largest accepted --memory limit (2^48-1 bytes, the value accepted before unit
+// suffixes were added). Anything above is rejected instead of overflowing the
+// runtime's arithmetic.
+constexpr std::uint64_t kMaxMemoryBytes = 0xFFFFFFFFFFFFULL;
+
+// Accepts a plain byte count or a binary-suffixed value: 512, 512B, 64K, 64KB,
+// 256M, 256MB, 1G, 1GB (case-insensitive). 0 means "no limit".
+#ifdef _WIN32
+bool ParseMemory(const std::string& text, unsigned long long* out) {
+#else
+bool ParseMemory(const std::string& text, unsigned long* out) {
+#endif
+  if (text.empty())
+    return false;
+  std::size_t i = 0;
+  std::uint64_t value = 0;
+  while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+    const std::uint64_t digit = static_cast<std::uint64_t>(text[i] - '0');
+    if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10)
+      return false;
+    value = value * 10 + digit;
+    ++i;
+  }
+  if (i == 0)
+    return false;
+
+  std::string suffix = text.substr(i);
+  for (char& c : suffix)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+  std::uint64_t multiplier = 1;
+  if (suffix.empty() || suffix == "b") {
+    multiplier = 1;
+  } else if (suffix == "k" || suffix == "kb") {
+    multiplier = 1024ULL;
+  } else if (suffix == "m" || suffix == "mb") {
+    multiplier = 1024ULL * 1024ULL;
+  } else if (suffix == "g" || suffix == "gb") {
+    multiplier = 1024ULL * 1024ULL * 1024ULL;
+  } else {
+    return false;
+  }
+
+  if (multiplier != 0 && value > kMaxMemoryBytes / multiplier)
+    return false;
+  value *= multiplier;
+#ifndef _WIN32
+  if (value > std::numeric_limits<unsigned long>::max())
+    return false;
+  *out = static_cast<unsigned long>(value);
+#else
+  *out = static_cast<unsigned long long>(value);
+#endif
+  return true;
+}
+
+bool IsHelpFlag(const std::string& s) { return s == "--help" || s == "-h"; }
+
 int Usage(std::string* error, const std::string& message) {
   if (error != nullptr)
     *error = message;
@@ -100,6 +165,201 @@ int MapStatus(const Status& s, Result* result) {
   return result->exit_code;
 }
 
+// Resolves the engine launched by `create` when the user did not pass
+// --engine/--no-engine: $NEXUSDB_DB_ENGINE first, then a sibling `db_engine`
+// next to the CLI binary. An empty result means "use the built-in placeholder".
+std::string ResolveDefaultEngine(const std::string& program_path) {
+  const char* env = std::getenv("NEXUSDB_DB_ENGINE");
+  if (env != nullptr && env[0] != '\0')
+    return std::string(env);
+  if (program_path.empty())
+    return std::string();
+  std::error_code ec;
+  const std::filesystem::path prog(program_path);
+  const std::filesystem::path dir =
+      prog.has_parent_path() ? prog.parent_path() : std::filesystem::path(".");
+  const std::filesystem::path candidate = dir / "db_engine";
+  if (std::filesystem::exists(candidate, ec) &&
+      !std::filesystem::is_directory(candidate, ec))
+    return candidate.string();
+  return std::string();
+}
+
+int ParseCreateOptions(const std::vector<std::string>& args, std::size_t start,
+                       Command* out, std::string* error) {
+  for (std::size_t i = start; i < args.size(); ++i) {
+    const std::string& flag = args[i];
+    if (flag == "--no-engine") {
+      out->engine.clear();
+      out->engine_explicit = true;
+      continue;
+    }
+    if (flag != "--memory" && flag != "--cpu" && flag != "--cpu-percent" &&
+        flag != "--engine")
+      return Usage(error, "unknown flag: " + flag);
+    if (i + 1 >= args.size())
+      return Usage(error, "missing value for " + flag);
+    const std::string& val = args[++i];
+    if (flag == "--memory") {
+#ifdef _WIN32
+      unsigned long long mem = 0;
+#else
+      unsigned long mem = 0;
+#endif
+      if (!ParseMemory(val, &mem))
+        return Invalid(error, "invalid --memory value: " + val);
+      out->memory = mem;
+    } else if (flag == "--cpu" || flag == "--cpu-percent") {
+      std::uint64_t v = 0;
+      if (!ParseUint(val, 100, &v))
+        return Invalid(error, "invalid " + flag + " value (0..100): " + val);
+      out->cpu = static_cast<unsigned int>(v);
+    } else {
+      if (val.empty())
+        return Invalid(error, "empty --engine path");
+      out->engine = val;
+      out->engine_explicit = true;
+    }
+  }
+  return kOk;
+}
+
+bool IsDbKind(CommandKind kind) {
+  switch (kind) {
+    case CommandKind::kDbInit:
+    case CommandKind::kTableCreate:
+    case CommandKind::kTableList:
+    case CommandKind::kInsert:
+    case CommandKind::kGet:
+    case CommandKind::kUpdate:
+    case CommandKind::kDelete:
+    case CommandKind::kScan:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Translates a parsed database command into the engine control protocol.
+std::string EngineCommandFor(const Command& cmd) {
+  switch (cmd.kind) {
+    case CommandKind::kDbInit:
+      return "init";
+    case CommandKind::kTableCreate:
+      return "table create " + cmd.table;
+    case CommandKind::kTableList:
+      return "table list";
+    case CommandKind::kInsert:
+      return "insert " + cmd.table + " " +
+             HexEncode(cmd.data.data(), cmd.data.size());
+    case CommandKind::kGet:
+      return "get " + cmd.table + " " + std::to_string(cmd.page) + " " +
+             std::to_string(cmd.slot);
+    case CommandKind::kUpdate:
+      return "update " + cmd.table + " " + std::to_string(cmd.page) + " " +
+             std::to_string(cmd.slot) + " " +
+             HexEncode(cmd.data.data(), cmd.data.size());
+    case CommandKind::kDelete:
+      return "delete " + cmd.table + " " + std::to_string(cmd.page) + " " +
+             std::to_string(cmd.slot);
+    case CommandKind::kScan:
+      return "scan " + cmd.table;
+    default:
+      return std::string();
+  }
+}
+
+// Executes a database command against the RUNNING engine over its control
+// socket, keeping its output identical to the direct (stopped-container) path.
+Result DispatchViaEngine(Manager* mgr, const Command& cmd) {
+  Result result;
+  std::string response;
+  const Status s = mgr->EngineRequest(cmd.name, EngineCommandFor(cmd), &response);
+  if (!s.ok())
+    return (MapStatus(s, &result), result);
+
+  const std::size_t nl = response.find('\n');
+  const std::string first =
+      response.substr(0, nl == std::string::npos ? response.size() : nl);
+  const std::string body =
+      (nl == std::string::npos) ? std::string() : response.substr(nl + 1);
+
+  if (first.rfind("OK", 0) == 0) {
+    const std::string payload = first.size() > 2 ? first.substr(3) : std::string();
+    result.exit_code = kOk;
+    result.output = body.empty() ? payload : body;
+
+    if (cmd.kind == CommandKind::kDbInit) {
+      result.output = "initialized database " + cmd.name;
+    } else if (cmd.kind == CommandKind::kTableCreate) {
+      result.output = "created table " + cmd.name + "." + cmd.table;
+    } else if (cmd.kind == CommandKind::kInsert) {
+      result.output = "inserted " + result.output;
+    } else if (cmd.kind == CommandKind::kTableList && result.output.empty()) {
+      result.output = "no tables";
+    } else if (cmd.kind == CommandKind::kScan && result.output.empty()) {
+      result.output = "no records";
+    }
+    return result;
+  }
+
+  if (first.rfind("ERR ", 0) == 0) {
+    const std::string rest = first.substr(4);
+    const std::size_t sp = rest.find(' ');
+    const std::string code_text =
+        (sp == std::string::npos) ? rest : rest.substr(0, sp);
+    const std::string message =
+        (sp == std::string::npos) ? std::string() : rest.substr(sp + 1);
+    std::uint64_t code = 1;
+    (void)ParseUint(code_text, 100, &code);
+    result.exit_code = (code == kInvalid || code == kNotFound)
+                           ? static_cast<int>(code)
+                           : kError;
+    result.output = message;
+    return result;
+  }
+
+  result.exit_code = kError;
+  result.output = "unexpected engine response: " + first;
+  return result;
+}
+
+int PrintExecResponse(const std::string& name, const std::string& response,
+                      Result* out) {
+  const std::size_t nl = response.find('\n');
+  const std::string first =
+      response.substr(0, nl == std::string::npos ? response.size() : nl);
+  const std::string body =
+      (nl == std::string::npos) ? std::string() : response.substr(nl + 1);
+
+  if (first.rfind("OK", 0) == 0) {
+    const std::string payload = first.size() > 2 ? first.substr(3) : std::string();
+    out->exit_code = kOk;
+    out->output = body.empty() ? payload : body;
+    if (!out->output.empty() && out->output.back() == '\n')
+      out->output.pop_back();
+    return kOk;
+  }
+  if (first.rfind("ERR ", 0) == 0) {
+    const std::string rest = first.substr(4);
+    const std::size_t sp = rest.find(' ');
+    const std::string code_text =
+        (sp == std::string::npos) ? rest : rest.substr(0, sp);
+    const std::string message =
+        (sp == std::string::npos) ? std::string() : rest.substr(sp + 1);
+    std::uint64_t code = 1;
+    (void)ParseUint(code_text, 100, &code);
+    out->exit_code = (code == kInvalid || code == kNotFound)
+                         ? static_cast<int>(code)
+                         : kError;
+    out->output = message;
+    return out->exit_code;
+  }
+  out->exit_code = kError;
+  out->output = "engine " + name + ": unexpected response: " + first;
+  return out->exit_code;
+}
+
 }  // namespace
 
 const char* HelpText() {
@@ -108,12 +368,11 @@ const char* HelpText() {
       "\n"
       "Usage:\n"
       "  nexusdb help\n"
-      "  nexusdb container create <name> [--memory <bytes>] [--cpu <percent>]"
-      " [--engine <path>]\n"
-      "  nexusdb container start <name>\n"
-      "  nexusdb container stop <name>\n"
-      "  nexusdb container status <name>\n"
-      "  nexusdb container delete <name>\n"
+      "  nexusdb create <name> [--memory <size>] [--cpu <percent>]"
+      " [--engine <path> | --no-engine]\n"
+      "  nexusdb start|stop|status|delete <name>\n"
+      "  nexusdb list\n"
+      "  nexusdb exec <name> [<command> [args...]]\n"
       "  nexusdb db init <name>\n"
       "  nexusdb table create <name> <table>\n"
       "  nexusdb table list <name>\n"
@@ -123,13 +382,65 @@ const char* HelpText() {
       "  nexusdb delete <name> <table> <page-id> <slot-id>\n"
       "  nexusdb scan <name> <table>\n"
       "\n"
+      "The long forms `nexusdb container ...` and `nexusdb db ...` also work\n"
+      "and remain stable for scripts.\n"
+      "\n"
+      "Memory sizes accept plain bytes or binary suffixes: B, K/KB, M/MB, G/GB\n"
+      "(e.g. 256M, 1G). 0 means unlimited. CPU is a percentage (0..100).\n"
+      "\n"
       "Records are supplied/returned as hexadecimal (even length). The database\n"
       "for <name> lives in $NEXUSDB_DATA_ROOT/<name> (default ./nexusdb_data).\n"
-      "A running container holds the database open; stop it before database\n"
-      "commands (there is no client/server protocol).\n"
+      "When the container is RUNNING the CLI talks to its db_engine over\n"
+      "<data-dir>/nexusdb.sock; when it is stopped the CLI opens the database\n"
+      "directly. `exec <name>` with no command is an interactive request loop.\n"
       "\n"
       "Exit codes: 0 ok, 1 operational error, 2 usage, 3 invalid argument,"
       " 4 not found.\n";
+}
+
+const char* HelpTopic(const std::string& name) {
+  if (name == "create") {
+    return
+        "usage: nexusdb create <name> [--memory <size>] [--cpu <percent>]"
+        " [--engine <path> | --no-engine]\n"
+        "\n"
+        "  --memory <size>   limit in bytes or with B/K/KB/M/MB/G/GB suffix;"
+        " 0 = unlimited\n"
+        "  --cpu <percent>   CPU quota percentage, 0..100; 0 = unlimited\n"
+        "  --engine <path>   engine executable (default: $NEXUSDB_DB_ENGINE,"
+        " else ./db_engine)\n"
+        "  --no-engine       do not launch an engine (placeholder workload)\n";
+  }
+  if (name == "status") {
+    return
+        "usage: nexusdb status <name>\n"
+        "\n"
+        "Prints the container state, id, PID, cgroup path, limits and live\n"
+        "resource usage. Works across CLI invocations (metadata is persisted).\n";
+  }
+  if (name == "list") {
+    return
+        "usage: nexusdb list\n"
+        "\n"
+        "Lists every persisted container: NAME, STATE, PID, MEMORY, CPU, ENGINE.\n";
+  }
+  if (name == "exec") {
+    return
+        "usage: nexusdb exec <name> [<command> [args...]]\n"
+        "\n"
+        "Sends one control request to the RUNNING container's engine, or starts\n"
+        "an interactive request loop when no command is given. Examples:\n"
+        "  nexusdb exec demo ping\n"
+        "  nexusdb exec demo stats\n"
+        "  nexusdb exec demo\n";
+  }
+  if (name == "start")
+    return "usage: nexusdb start <name>\n";
+  if (name == "stop")
+    return "usage: nexusdb stop <name>\n";
+  if (name == "delete")
+    return "usage: nexusdb delete <name>\n";
+  return HelpText();
 }
 
 int ParseArgs(const std::vector<std::string>& args, Command* out,
@@ -142,43 +453,80 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
   const std::string& cmd = args[0];
   if (cmd == "help" || cmd == "--help" || cmd == "-h") {
     out->kind = CommandKind::kHelp;
+    out->help_topic = args.size() > 1 ? args[1] : std::string();
+    return kOk;
+  }
+
+  // `<command> --help` / `<command> -h`
+  if (args.size() == 2 && IsHelpFlag(args[1])) {
+    out->kind = CommandKind::kHelp;
+    out->help_topic = cmd;
+    return kOk;
+  }
+
+  // Short forms: create/start/stop/status/delete/list/exec.
+  if (cmd == "create") {
+    if (args.size() < 2)
+      return Usage(error, "usage: nexusdb create <name> [options]");
+    out->kind = CommandKind::kContainerCreate;
+    out->name = args[1];
+    return ParseCreateOptions(args, 2, out, error);
+  }
+  if (cmd == "start" || cmd == "stop" || cmd == "status") {
+    if (args.size() != 2)
+      return Usage(error, "usage: nexusdb " + cmd + " <name>");
+    out->name = args[1];
+    out->kind = (cmd == "start")   ? CommandKind::kContainerStart
+                : (cmd == "stop")  ? CommandKind::kContainerStop
+                                   : CommandKind::kContainerStatus;
+    return kOk;
+  }
+  // `delete <name>` deletes a container; `delete <name> <table> <page> <slot>`
+  // deletes a record (handled below). Disambiguate on the argument count.
+  if (cmd == "delete" && args.size() == 2) {
+    out->kind = CommandKind::kContainerDelete;
+    out->name = args[1];
+    return kOk;
+  }
+  if (cmd == "list") {
+    if (args.size() != 1)
+      return Usage(error, "usage: nexusdb list");
+    out->kind = CommandKind::kContainerList;
+    return kOk;
+  }
+  if (cmd == "exec") {
+    if (args.size() < 2)
+      return Usage(error, "usage: nexusdb exec <name> [<command> [args...]]");
+    out->kind = CommandKind::kContainerExec;
+    out->name = args[1];
+    for (std::size_t i = 2; i < args.size(); ++i) {
+      if (i != 2)
+        out->request.push_back(' ');
+      out->request += args[i];
+    }
     return kOk;
   }
 
   // container <sub> ...
   if (cmd == "container") {
     if (args.size() < 2)
-      return Usage(error, "usage: nexusdb container <create|start|stop|status|delete> <name>");
+      return Usage(error,
+                   "usage: nexusdb container "
+                   "<create|start|stop|status|delete|list> <name>");
     const std::string& sub = args[1];
     if (sub == "create") {
       if (args.size() < 3)
-        return Usage(error, "usage: nexusdb container create <name> [--memory <bytes>] [--cpu <percent>] [--engine <path>]");
+        return Usage(error,
+                     "usage: nexusdb container create <name> [--memory <size>] "
+                     "[--cpu <percent>] [--engine <path> | --no-engine]");
       out->kind = CommandKind::kContainerCreate;
       out->name = args[2];
-      for (std::size_t i = 3; i < args.size(); ++i) {
-        const std::string& flag = args[i];
-        if (i + 1 >= args.size())
-          return Usage(error, "missing value for " + flag);
-        const std::string& val = args[++i];
-        if (flag == "--memory") {
-          const std::uint64_t max_memory = 0xFFFFFFFFFFFFULL;
-          std::uint64_t v = 0;
-          if (!ParseUint(val, max_memory, &v) ||
-              v > static_cast<std::uint64_t>(
-                      std::numeric_limits<unsigned long>::max()))
-            return Invalid(error, "invalid --memory value: " + val);
-          out->memory = static_cast<unsigned long>(v);
-        } else if (flag == "--cpu") {
-          std::uint64_t v = 0;
-          if (!ParseUint(val, 100, &v))
-            return Invalid(error, "invalid --cpu value (0..100): " + val);
-          out->cpu = static_cast<unsigned int>(v);
-        } else if (flag == "--engine") {
-          out->engine = val;
-        } else {
-          return Usage(error, "unknown flag: " + flag);
-        }
-      }
+      return ParseCreateOptions(args, 3, out, error);
+    }
+    if (sub == "list") {
+      if (args.size() != 2)
+        return Usage(error, "usage: nexusdb container list");
+      out->kind = CommandKind::kContainerList;
       return kOk;
     }
     if (sub == "start" || sub == "stop" || sub == "status" || sub == "delete") {
@@ -242,7 +590,8 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
   // get <name> <table> <page> <slot>
   if (cmd == "get") {
     if (args.size() != 5)
-      return Usage(error, "usage: nexusdb get <name> <table> <page-id> <slot-id>");
+      return Usage(error,
+                   "usage: nexusdb get <name> <table> <page-id> <slot-id>");
     out->kind = CommandKind::kGet;
     out->name = args[1];
     out->table = args[2];
@@ -260,7 +609,9 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
   // update <name> <table> <page> <slot> <hex>
   if (cmd == "update") {
     if (args.size() != 6)
-      return Usage(error, "usage: nexusdb update <name> <table> <page-id> <slot-id> <hex-data>");
+      return Usage(error,
+                   "usage: nexusdb update <name> <table> <page-id> <slot-id> "
+                   "<hex-data>");
     out->kind = CommandKind::kUpdate;
     out->name = args[1];
     out->table = args[2];
@@ -282,7 +633,8 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
   // delete <name> <table> <page> <slot>
   if (cmd == "delete") {
     if (args.size() != 5)
-      return Usage(error, "usage: nexusdb delete <name> <table> <page-id> <slot-id>");
+      return Usage(error,
+                   "usage: nexusdb delete <name> <table> <page-id> <slot-id>");
     out->kind = CommandKind::kDelete;
     out->name = args[1];
     out->table = args[2];
@@ -318,15 +670,30 @@ Result Dispatch(Manager* mgr, const Command& cmd) {
     return result;
   }
 
+  // Database commands on a RUNNING container must go through the engine's
+  // control socket: the engine holds the files open, so opening them directly
+  // would race its page writes (and be refused by Manager::OpenDb).
+  if (IsDbKind(cmd.kind) && mgr->ContainerIsRunning(cmd.name)) {
+    Result routed = DispatchViaEngine(mgr, cmd);
+    if (routed.exit_code != kOk && !mgr->EngineAlive(cmd.name) &&
+        mgr->MarkContainerStopped(cmd.name).ok()) {
+      return Dispatch(mgr, cmd);
+    }
+    return routed;
+  }
+
   switch (cmd.kind) {
     case CommandKind::kHelp:
       result.exit_code = kOk;
-      result.output = HelpText();
+      result.output = HelpTopic(cmd.help_topic);
       return result;
 
     case CommandKind::kContainerCreate: {
+      std::string engine = cmd.engine;
+      if (!cmd.engine_explicit)
+        engine = ResolveDefaultEngine(cmd.program_path);
       const Status s =
-          mgr->ContainerCreate(cmd.name, cmd.memory, cmd.cpu, cmd.engine);
+          mgr->ContainerCreate(cmd.name, cmd.memory, cmd.cpu, engine);
       if (!s.ok())
         return (MapStatus(s, &result), result);
       result.output = "created container " + cmd.name;
@@ -359,6 +726,85 @@ Result Dispatch(Manager* mgr, const Command& cmd) {
       if (!s.ok())
         return (MapStatus(s, &result), result);
       result.output = std::move(text);
+      return result;
+    }
+    case CommandKind::kContainerList: {
+      std::vector<Manager::ContainerInfo> infos;
+      const Status s = mgr->ListContainers(&infos);
+      if (!s.ok())
+        return (MapStatus(s, &result), result);
+      if (infos.empty()) {
+        result.output = "no containers";
+        return result;
+      }
+      char line[256];
+      std::snprintf(line, sizeof(line), "%-20s %-10s %-8s %-14s %-6s %s\n",
+                    "NAME", "STATE", "PID", "MEMORY", "CPU", "ENGINE");
+      result.output = line;
+      for (const Manager::ContainerInfo& info : infos) {
+        const char* state = "UNKNOWN";
+        switch (info.state) {
+          case NEXUS_CREATED:
+            state = "CREATED";
+            break;
+          case NEXUS_RUNNING:
+            state = "RUNNING";
+            break;
+          case NEXUS_STOPPED:
+            state = "STOPPED";
+            break;
+          case NEXUS_DELETED:
+            state = "DELETED";
+            break;
+          default:
+            break;
+        }
+        char cpu[16];
+        std::snprintf(cpu, sizeof(cpu), "%u%%", info.cpu_percent);
+        std::snprintf(line, sizeof(line), "%-20s %-10s %-8ld %-14lu %-6s %s\n",
+                      info.name.c_str(), state, info.pid, info.memory_bytes, cpu,
+                      info.engine.c_str());
+        result.output += line;
+      }
+      return result;
+    }
+    case CommandKind::kContainerExec: {
+      if (!mgr->ContainerIsRunning(cmd.name)) {
+        result.exit_code = kError;
+        result.output = "container " + cmd.name + " is not RUNNING";
+        return result;
+      }
+      if (!cmd.request.empty()) {
+        std::string response;
+        const Status s = mgr->EngineRequest(cmd.name, cmd.request, &response);
+        if (!s.ok())
+          return (MapStatus(s, &result), result);
+        (void)PrintExecResponse(cmd.name, response, &result);
+        return result;
+      }
+      // Interactive loop: one request per line until EOF or `quit`.
+      result.exit_code = kOk;
+      std::string line;
+      while (std::getline(std::cin, line)) {
+        if (line.empty())
+          continue;
+        std::string response;
+        const Status s = mgr->EngineRequest(cmd.name, line, &response);
+        if (!s.ok())
+          return (MapStatus(s, &result), result);
+        Result one;
+        (void)PrintExecResponse(cmd.name, response, &one);
+        if (!one.output.empty()) {
+          std::fputs(one.output.c_str(), stdout);
+          if (one.output.back() != '\n')
+            std::fputc('\n', stdout);
+          std::fflush(stdout);
+        }
+        if (line == "quit")
+          break;
+        if (one.exit_code != kOk)
+          result.exit_code = one.exit_code;
+      }
       return result;
     }
 
@@ -461,8 +907,10 @@ Result Dispatch(Manager* mgr, const Command& cmd) {
   return result;
 }
 
-Result Run(Manager* mgr, const std::vector<std::string>& args) {
+Result Run(Manager* mgr, const std::vector<std::string>& args,
+           const std::string& program_path) {
   Command cmd;
+  cmd.program_path = program_path;
   std::string error;
   const int rc = ParseArgs(args, &cmd, &error);
   if (rc != kOk) {

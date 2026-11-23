@@ -10,6 +10,8 @@
 #include <cstring>
 #include <vector>
 
+#include "common/durable.h"
+
 namespace nexusdb {
 namespace {
 
@@ -302,6 +304,13 @@ Status Wal::Flush() {
   file_.flush();
   if (!file_) {
     return Status::Error(DbError::kIoError, "wal: flush failed");
+  }
+  // Synchronize the kernel page cache to storage so appended records survive
+  // an OS crash / power loss (assuming the filesystem honors fsync()). The
+  // stream is flushed first; fsync() then pushes the file's inode to disk.
+  Status s = nexusdb::FsyncFile(path_);
+  if (!s.ok()) {
+    return s;  // do not claim durability: durable_lsn_ is unchanged
   }
   durable_lsn_ = next_lsn_ - 1;
   return Status::Ok();

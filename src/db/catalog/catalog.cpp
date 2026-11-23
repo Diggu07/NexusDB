@@ -1,4 +1,4 @@
-// NexusDB — persistent catalog implementation (R1.3).
+// NexusDB — persistent catalog implementation.
 //
 // See include/db/catalog.h for the on-disk format, ownership rules, and
 // validation contract. Page bytes move only through BufferPool handles; new
