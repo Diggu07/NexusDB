@@ -83,12 +83,17 @@ struct Command {
   std::string help_topic;   // "" or the subcommand name for `<cmd> --help`
   bool engine_explicit = false; // --engine or --no-engine was provided
   bool isolate_namespaces = false; // --isolate requests Linux namespace isolation
+  bool scan_verbose = false;        // --verbose prints text and hexadecimal
 };
 
 struct Result {
   int exit_code = kOk;
   std::string output;
 };
+
+std::string FormatScanRecord(unsigned int page, unsigned int slot,
+                             const std::vector<std::uint8_t>& data,
+                             bool verbose);
 
 // Parses argv (excluding the program name) into `out`. Returns kOk, kUsage, or
 // kInvalid; on non-ok `*error` receives a human-readable message.

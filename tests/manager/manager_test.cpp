@@ -43,6 +43,7 @@ using nexusdb::Page;
 using nexusdb::Status;
 using nexusdb::cli::Command;
 using nexusdb::cli::CommandKind;
+using nexusdb::cli::FormatScanRecord;
 using nexusdb::cli::ParseArgs;
 using nexusdb::cli::Run;
 
@@ -664,6 +665,25 @@ int main() {
   r = Run(&mgr, {"resources", "ghost"});
   CHECK("dispatch resources unknown -> not found",
         r.exit_code == nexusdb::cli::kNotFound);
+
+  CHECK("format empty record as text",
+        FormatScanRecord(3, 0, std::vector<std::uint8_t>(), false) ==
+            "page=3 slot=0 len=0 text=\"\"");
+  CHECK("format empty record verbose",
+        FormatScanRecord(3, 0, std::vector<std::uint8_t>(), true) ==
+            "page=3 slot=0 len=0 text=\"\" hex=");
+  CHECK("format null byte record as hex",
+        FormatScanRecord(3, 1, std::vector<std::uint8_t>{0x00, 0xFF}, false) ==
+            "page=3 slot=1 len=2 hex=00ff");
+  CHECK("format invalid UTF-8 as hex",
+        FormatScanRecord(3, 2, std::vector<std::uint8_t>{0xFF, 0xFE}, false) ==
+            "page=3 slot=2 len=2 hex=fffe");
+  CHECK("format text escapes quotes and backslashes",
+        FormatScanRecord(3, 3, std::vector<std::uint8_t>{'"', '\\'}, false) ==
+            "page=3 slot=3 len=2 text=\"\\\"\\\\\"");
+  CHECK("parse scan verbose flag",
+        ParseArgs({"scan", "db1", "t1", "--verbose"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kScan && cmd.scan_verbose);
 
   RemoveAll(root);
   RemoveAll(cg);

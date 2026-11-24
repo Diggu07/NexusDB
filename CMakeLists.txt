@@ -111,6 +111,11 @@ add_library(nexus_bridge_adapter STATIC
 
 # Phase 3: live dashboard metrics core + plain-text renderer (Rehan). The
 # default build needs no ncurses; Unicode/terminal concerns live in the UI.
+if(UNIX)
+  add_executable(nexusdb_tty_size src/dashboard/tty_size.cpp)
+  set_target_properties(nexusdb_tty_size PROPERTIES OUTPUT_NAME nexusdb-tty-size)
+endif()
+
 add_executable(nexus_dashboard_test
   src/dashboard/metrics.c
   src/dashboard/dashboard_text.c

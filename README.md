@@ -55,7 +55,8 @@ actually in the tree from what is still being designed or built.
   runtime and the database engine, a `Router` that validates and dispatches
   arguments, and a `nexusdb` **CLI** providing an end-to-end workflow: create a
   named database container, run its lifecycle, and create tables / insert / get /
-  update / delete / scan records as hexadecimal. Container metadata is persisted
+  update / delete / scan records. Printable records are shown as text; binary
+  data is shown as hexadecimal. Container metadata is persisted
   to disk (not only a process-local registry); the CLI is a one-shot process with
   stable exit codes. When a container is RUNNING, its engine exposes a private
   Unix-domain control socket and database commands are proxied to it; when the
@@ -248,7 +249,7 @@ build/nexusdb insert <name> <table> <hex-data>
 build/nexusdb get <name> <table> <page-id> <slot-id>
 build/nexusdb update <name> <table> <page-id> <slot-id> <hex-data>
 build/nexusdb delete <name> <table> <page-id> <slot-id>
-build/nexusdb scan <name> <table>
+build/nexusdb scan <name> <table> [--verbose]
 ```
 
 - The long forms `nexusdb container ...` and `nexusdb db ...` remain stable for
@@ -283,9 +284,12 @@ build/nexusdb scan <name> <table>
   the exact text bytes; `update db1 t1 <page> <slot> "Updated record"` replaces
   a record with text. Use `--hex` for binary/hex input (even length, no
   auto-detection): `insert db1 t1 --hex deadbeef` and
-  `update db1 t1 <page> <slot> --hex 00ff`. `get` and `scan` still display bytes
-  as hexadecimal; a hex-looking string without `--hex` is stored as literal
-  text.
+  `update db1 t1 <page> <slot> --hex 00ff`. `get` always displays bytes as
+   hexadecimal. `scan` displays printable UTF-8 records as text and falls back
+   to hexadecimal for binary/non-printable data; `scan ... --verbose` shows both
+   representations. A hex-looking string without `--hex` is stored as literal
+   text.
+
 - Exit codes: `0` ok, `1` unmapped operational error, `2` usage, `3` invalid
   argument, `4` not found, `5` I/O error, `6` bad state, `7` buffer full,
   `8` out of memory.
@@ -337,9 +341,12 @@ with `NEXUSDB_DATA_ROOT=/.nexusdb-data` (the same data dir is also mounted at
 `nexusdb.sock.path` is mounted at its real path. Shortcuts avoid repeating the
 CLI and container name: `status`, `list`, `exec`/`run`, `init`, `db`, `table`,
 `insert`, `get`, `update`, `delete`, `scan` (run `nxhelp` inside for the list).
-A live right-side panel shows the container's memory limit/used/free, CPU
-limit/used, process count and state on every prompt; set `NEXUSDB_DASHBOARD=0`
-to hide it.
+A live top panel shows the container's memory limit/used/free, CPU limit/used,
+process count and state on every prompt while the shell scrolls independently
+below it. When the viewport is already full, the top rows are scrolled into
+scrollback before the panel is reserved; exiting the container restores the full
+terminal. Set `NEXUSDB_DASHBOARD=0` to hide the dashboard and use the full
+terminal.
 
 End-to-end lifecycle with auto-isolation enabled:
 

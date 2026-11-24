@@ -74,6 +74,144 @@ std::string HexEncode(const std::uint8_t* data, std::size_t len) {
   return out;
 }
 
+bool ParseUint(const std::string& text, std::uint64_t max, std::uint64_t* out);
+
+bool IsPrintableUtf8(const std::uint8_t* data, std::size_t len) {
+  std::size_t i = 0;
+  while (i < len) {
+    const std::uint8_t b0 = data[i];
+    if (b0 < 0x20 || b0 == 0x7F)
+      return false;
+    if (b0 < 0x80) {
+      ++i;
+      continue;
+    }
+
+    std::size_t width = 0;
+    std::uint32_t cp = 0;
+    if ((b0 & 0xE0) == 0xC0) {
+      if (b0 < 0xC2)
+        return false;
+      width = 2;
+      cp = b0 & 0x1F;
+    } else if ((b0 & 0xF0) == 0xE0) {
+      width = 3;
+      cp = b0 & 0x0F;
+    } else if ((b0 & 0xF8) == 0xF0) {
+      if (b0 > 0xF4)
+        return false;
+      width = 4;
+      cp = b0 & 0x07;
+    } else {
+      return false;
+    }
+    if (i + width > len)
+      return false;
+
+    for (std::size_t k = 1; k < width; ++k) {
+      const std::uint8_t b = data[i + k];
+      if ((b & 0xC0) != 0x80)
+        return false;
+      cp = (cp << 6) | (b & 0x3F);
+    }
+    if ((width == 2 && cp < 0x80) || (width == 3 && cp < 0x800) ||
+        (width == 4 && cp < 0x10000))
+      return false;
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+      return false;
+    if (cp >= 0x80 && cp <= 0x9F)
+      return false;
+    if (cp == 0x2028 || cp == 0x2029)
+      return false;
+    i += width;
+  }
+  return true;
+}
+
+std::string QuoteScanText(const std::uint8_t* data, std::size_t len) {
+  std::string out;
+  out.reserve(len + 2);
+  out.push_back('"');
+  for (std::size_t i = 0; i < len; ++i) {
+    if (data[i] == '"' || data[i] == '\\')
+      out.push_back('\\');
+    out.push_back(static_cast<char>(data[i]));
+  }
+  out.push_back('"');
+  return out;
+}
+
+std::string FormatScanLine(unsigned int page, unsigned int slot,
+                           std::size_t len, const std::uint8_t* data,
+                           bool verbose) {
+  char buf[80];
+  std::snprintf(buf, sizeof(buf), "page=%u slot=%u len=%zu", page, slot, len);
+  std::string out = buf;
+  const bool printable = IsPrintableUtf8(data, len);
+  if (printable)
+    out += " text=" + QuoteScanText(data, len);
+  if (verbose || !printable)
+    out += " hex=" + HexEncode(data, len);
+  return out;
+}
+
+bool ScanField(const std::string& line, const char* key, std::string* value) {
+  const std::string prefix = std::string(key) + "=";
+  const std::size_t at = line.find(prefix);
+  if (at == std::string::npos)
+    return false;
+  const std::size_t start = at + prefix.size();
+  std::size_t end = line.find(' ', start);
+  if (end == std::string::npos)
+    end = line.size();
+  *value = line.substr(start, end - start);
+  return true;
+}
+
+std::string FormatEngineScanLine(const std::string& line, bool verbose) {
+  std::string page_text;
+  std::string slot_text;
+  std::string len_text;
+  std::string hex_text;
+  if (!ScanField(line, "page", &page_text) ||
+      !ScanField(line, "slot", &slot_text) ||
+      !ScanField(line, "len", &len_text) ||
+      !ScanField(line, "hex", &hex_text))
+    return line;
+
+  std::uint64_t page = 0;
+  std::uint64_t slot = 0;
+  std::uint64_t len = 0;
+  if (!ParseUint(page_text, std::numeric_limits<unsigned int>::max(), &page) ||
+      !ParseUint(slot_text, 0xFFFF, &slot) ||
+      !ParseUint(len_text, std::numeric_limits<std::size_t>::max(), &len))
+    return line;
+
+  std::vector<std::uint8_t> data;
+  if (!HexDecode(hex_text, &data) || data.size() != len)
+    return line;
+  return FormatScanLine(static_cast<unsigned int>(page),
+                        static_cast<unsigned int>(slot), data.size(),
+                        data.data(), verbose);
+}
+
+std::string FormatEngineScanOutput(const std::string& body, bool verbose) {
+  std::string out;
+  std::size_t start = 0;
+  while (start < body.size()) {
+    const std::size_t end = body.find('\n', start);
+    const std::string line =
+        body.substr(start, end == std::string::npos ? std::string::npos
+                                                    : end - start);
+    out += FormatEngineScanLine(line, verbose);
+    if (end == std::string::npos)
+      break;
+    out.push_back('\n');
+    start = end + 1;
+  }
+  return out;
+}
+
 // Parses an unsigned decimal integer, rejecting empty input, non-digit
 // characters, and any value above `max`. Uses 64-bit arithmetic with an
 // explicit overflow guard so it never wraps on a 32-bit `unsigned long` (where
@@ -301,6 +439,8 @@ Result DispatchViaEngine(Manager* mgr, const Command& cmd) {
     const std::string payload = first.size() > 2 ? first.substr(3) : std::string();
     result.exit_code = kOk;
     result.output = body.empty() ? payload : body;
+    if (cmd.kind == CommandKind::kScan)
+      result.output = FormatEngineScanOutput(result.output, cmd.scan_verbose);
 
     if (cmd.kind == CommandKind::kDbInit) {
       result.output = "initialized database " + cmd.name;
@@ -375,6 +515,12 @@ int PrintExecResponse(const std::string& name, const std::string& response,
 
 }  // namespace
 
+std::string FormatScanRecord(unsigned int page, unsigned int slot,
+                             const std::vector<std::uint8_t>& data,
+                             bool verbose) {
+  return FormatScanLine(page, slot, data.size(), data.data(), verbose);
+}
+
 const char* HelpText() {
   return
       "NexusDB — minimal end-to-end database CLI\n"
@@ -396,7 +542,7 @@ const char* HelpText() {
       "  nexusdb update <name> <table> <page-id> <slot-id> \"<text>\"\n"
       "  nexusdb update <name> <table> <page-id> <slot-id> --hex <hex-data>\n"
       "  nexusdb delete <name> <table> <page-id> <slot-id>\n"
-      "  nexusdb scan <name> <table>\n"
+      "  nexusdb scan <name> <table> [--verbose]\n"
       "\n"
       "The long forms `nexusdb container ...` and `nexusdb db ...` also work\n"
       "and remain stable for scripts.\n"
@@ -406,8 +552,10 @@ const char* HelpText() {
       "\n"
       "Record input is UTF-8 text by default; its exact bytes are stored. Use\n"
       "--hex for binary/hexadecimal input (even length, no auto-detection).\n"
-      "get/scan still return record bytes as hexadecimal. The database for\n"
-      "<name> lives in $NEXUSDB_DATA_ROOT/<name> (default ./nexusdb_data).\n"
+      "get always returns hexadecimal. scan prints readable UTF-8 text when\n"
+      "the bytes are printable, otherwise hexadecimal; --verbose prints both.\n"
+      "The database for <name> lives in $NEXUSDB_DATA_ROOT/<name>\n"
+      "(default ./nexusdb_data).\n"
       "When the container is RUNNING the CLI talks to its db_engine over\n"
       "<data-dir>/nexusdb.sock; when it is stopped the CLI opens the database\n"
       "directly. `exec <name>` with no command is an interactive request loop.\n"
@@ -477,6 +625,14 @@ const char* HelpTopic(const std::string& name) {
         "\n"
         "Replaces a record with the exact UTF-8 bytes of <text> by default.\n"
         "Pass --hex for even-length hexadecimal binary input.\n";
+  }
+  if (name == "scan") {
+    return
+        "usage: nexusdb scan <name> <table> [--verbose]\n"
+        "\n"
+        "Prints each record with its page, slot and byte length. Printable UTF-8\n"
+        "payloads are shown as text; binary or non-printable payloads are shown\n"
+        "as hexadecimal. --verbose shows text (when available) and hexadecimal.\n";
   }
   if (name == "start")
     return "usage: nexusdb start <name>\n";
@@ -705,13 +861,25 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
     return kOk;
   }
 
-  // scan <name> <table>
+  // scan <name> <table> [--verbose]
   if (cmd == "scan") {
-    if (args.size() != 3)
-      return Usage(error, "usage: nexusdb scan <name> <table>");
+    std::vector<std::string> positional;
+    bool verbose = false;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      if (args[i] == "--verbose") {
+        verbose = true;
+      } else if (args[i].rfind("--", 0) == 0) {
+        return Usage(error, "unknown scan option: " + args[i]);
+      } else {
+        positional.push_back(args[i]);
+      }
+    }
+    if (positional.size() != 2)
+      return Usage(error, "usage: nexusdb scan <name> <table> [--verbose]");
     out->kind = CommandKind::kScan;
-    out->name = args[1];
-    out->table = args[2];
+    out->name = positional[0];
+    out->table = positional[1];
+    out->scan_verbose = verbose;
     return kOk;
   }
 
@@ -956,11 +1124,8 @@ Result Dispatch(Manager* mgr, const Command& cmd) {
         return result;
       }
       for (const ScanRecord& r : records) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "page=%u slot=%u len=%zu hex=", r.page,
-                      r.slot, r.data.size());
-        result.output += buf;
-        result.output += HexEncode(r.data.data(), r.data.size());
+        result.output += FormatScanLine(r.page, r.slot, r.data.size(),
+                                        r.data.data(), cmd.scan_verbose);
         result.output.push_back('\n');
       }
       return result;

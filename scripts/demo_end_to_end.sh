@@ -9,8 +9,8 @@
 # Real kernel enforcement (cgroup limits, OOM kills, CPU throttling) needs a
 # writable cgroup v2 subtree. When run from a plain shell the demo binaries
 # honestly report ENV-LIMITED and exit 0; the same binaries exercise the real
-# kernel when run inside a delegated systemd user scope. This script runs both
-# and skips the delegated half automatically if no user scope is available.
+# kernel when the shell is already inside the delegated cgroup root. This script
+# skips the delegated half automatically when that root is not available.
 #
 # Usage:
 #   bash scripts/demo_end_to_end.sh [build_dir]
@@ -45,24 +45,27 @@ run() {
     fi
 }
 
+NEXUS_CGROUP_ROOT="${NEXUS_CGROUP_ROOT:-/sys/fs/cgroup/nexusdb}"
+export NEXUS_CGROUP_ROOT
+
 delegated_ok=0
-if command -v systemd-run >/dev/null 2>&1 &&
-    systemd-run --user --scope --quiet -- true >/dev/null 2>&1; then
-    delegated_ok=1
+if [ -r /proc/self/cgroup ]; then
+    current_cgroup=""
+    IFS=: read -r _ _ current_cgroup < /proc/self/cgroup || true
+    cgroup_root_rel="${NEXUS_CGROUP_ROOT#/sys/fs/cgroup}"
+    case "$current_cgroup" in
+        "$cgroup_root_rel"|"$cgroup_root_rel"/*) delegated_ok=1 ;;
+    esac
 fi
 
 run_delegated() {
     local desc="$1"
     shift
     if [ "$delegated_ok" -ne 1 ]; then
-        echo "--- $desc (SKIPPED: systemd user scope unavailable) ---"
+        echo "--- $desc (SKIPPED: shell is not inside $NEXUS_CGROUP_ROOT) ---"
         return 0
     fi
-    if [ -n "${NEXUS_CGROUP_ROOT:-}" ]; then
-        run "$desc" systemd-run --user --scope --quiet -- env "NEXUS_CGROUP_ROOT=$NEXUS_CGROUP_ROOT" "$@"
-    else
-        run "$desc" systemd-run --user --scope --quiet -- "$@"
-    fi
+    run "$desc" "$@"
 }
 
 section "0. CONFIGURE + BUILD"
@@ -145,8 +148,8 @@ run_delegated "dashboard_engine (delegated, full pipeline)" \
     ./"$BUILD_DIR"/nexus_dashboard_engine nexusdb-demo 256 3
 
 section "8. CLEANUP"
-find /sys/fs/cgroup/user.slice/user-"$(id -u)".slice/user@"$(id -u)".service \
-    -depth -type d -name 'nexus*' -exec rmdir {} + 2>/dev/null || true
+find "$NEXUS_CGROUP_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name devshell \
+    -exec rmdir {} + 2>/dev/null || true
 rm -rf /tmp/nexus_lc_* /tmp/nexus_cgtest_* /tmp/nexus_eng_* 2>/dev/null || true
 if [ -n "${DEMO_DATA_ROOT:-}" ]; then
     rm -rf "$DEMO_DATA_ROOT" 2>/dev/null || true

@@ -436,13 +436,13 @@ if [[ $so =~ page=([0-9]+)[[:space:]]slot=([0-9]+) ]]; then
   capture "scan" scan testdb students
   expect_rc "11b. nexus scan records (rc=0)" 0 "$rc"
   expect_contains "11b. scan preserves updated text bytes" \
-    'hex=55706461746564207265636f7264' "$so"
+    'text="Updated record"' "$so"
   expect_contains "11b. scan preserves punctuation bytes" \
-    'hex=48656c6c6f2c204e65787573444221' "$so"
+    'text="Hello, NexusDB!"' "$so"
   expect_contains "11b. scan preserves multi-byte UTF-8 bytes" \
-    'hex=636166c3a920e29895' "$so"
+    'text="café ☕"' "$so"
   expect_contains "11b. scan stores hex-looking input as literal text" \
-    'hex=34383635366336633666' "$so"
+    'text="48656c6c6f"' "$so"
 
   capture "insert invalid hex" insert testdb students --hex zz
   expect_rc "11b. invalid hex with --hex (rc=3)" 3 "$rc"

@@ -266,11 +266,52 @@ int main() {
                 .exit_code == 0);
   {
     CliResult r = RunCli(cli, "scan db1 text", outfile);
-    CHECK("scan preserves all text bytes byte-for-byte",
-          r.exit_code == 0 && Contains(r.out, "hex=48656c6c6f20576f726c64") &&
-              Contains(r.out, "hex=48656c6c6f2c204e65787573444221") &&
-              Contains(r.out, "hex=636166c3a9") &&
-              Contains(r.out, "hex=34383635366336633666"));
+    CHECK("scan prints readable text with metadata",
+          r.exit_code == 0 &&
+              Contains(r.out, "len=11 text=\"Hello World\"") &&
+              Contains(r.out, "len=15 text=\"Hello, NexusDB!\"") &&
+              Contains(r.out, "len=5 text=\"café\"") &&
+              Contains(r.out, "len=10 text=\"48656c6c6f\""));
+  }
+  {
+    CliResult r = RunCli(cli, "scan db1 text --verbose", outfile);
+    CHECK("verbose scan prints text and hex",
+          r.exit_code == 0 &&
+              Contains(r.out,
+                       "len=11 text=\"Hello World\" hex=48656c6c6f20576f726c64") &&
+              Contains(r.out, "len=5 text=\"café\" hex=636166c3a9"));
+  }
+  CHECK("empty text insert remains rejected",
+        RunCli(cli, "insert db1 text " + ShellQuote(""), outfile).exit_code == 3);
+  {
+    CliResult r = RunCli(cli, "insert db1 text --hex 6469676775", outfile);
+    unsigned int p = 0, s = 0;
+    CHECK("hex insert of printable bytes -> 0", r.exit_code == 0);
+    CHECK("hex insert reports page/slot", ExtractPageSlot(r.out, &p, &s));
+    std::ostringstream cmd;
+    cmd << "get db1 text " << p << " " << s;
+    CliResult g = RunCli(cli, cmd.str(), outfile);
+    CHECK("hex-inserted bytes remain unchanged",
+          g.exit_code == 0 && Contains(g.out, "hex=6469676775"));
+  }
+  CHECK("binary insert -> 0",
+        RunCli(cli, "insert db1 text --hex 00ff10ab", outfile).exit_code == 0);
+  CHECK("invalid UTF-8 insert -> 0",
+        RunCli(cli, "insert db1 text --hex fffe", outfile).exit_code == 0);
+  {
+    CliResult r = RunCli(cli, "scan db1 text", outfile);
+    CHECK("scan handles text, binary and invalid UTF-8 records",
+          r.exit_code == 0 && Contains(r.out, "len=5 text=\"diggu\"") &&
+              Contains(r.out, "len=4 hex=00ff10ab") &&
+              Contains(r.out, "len=2 hex=fffe"));
+  }
+  {
+    CliResult r = RunCli(cli, "scan db1 text --verbose", outfile);
+    CHECK("verbose scan keeps exact hex for non-text records",
+          r.exit_code == 0 &&
+              Contains(r.out, "len=5 text=\"diggu\" hex=6469676775") &&
+              Contains(r.out, "len=4 hex=00ff10ab") &&
+              Contains(r.out, "len=2 hex=fffe"));
   }
   {
     std::ostringstream cmd;
@@ -377,7 +418,13 @@ int main() {
           CliResult r = RunCli(cli, "scan e2e1 t", outfile);
           CHECK("scan while RUNNING shows hex and text records",
                 r.exit_code == 0 && Contains(r.out, "hex=11223344") &&
-                    Contains(r.out, "hex=557064617465642076696120656e67696e65"));
+                    Contains(r.out, "text=\"Updated via engine\""));
+          CliResult v = RunCli(cli, "scan e2e1 t --verbose", outfile);
+          CHECK("verbose scan while RUNNING shows text and hex",
+                v.exit_code == 0 &&
+                    Contains(v.out,
+                             "text=\"Updated via engine\" "
+                             "hex=557064617465642076696120656e67696e65"));
         }
         {
           CliResult r = RunCli(cli, "exec e2e1 ping", outfile);
@@ -397,7 +444,7 @@ int main() {
           CliResult r = RunCli(cli, "scan e2e1 t", outfile);
           CHECK("scan after stop shows persisted hex and text records",
                 r.exit_code == 0 && Contains(r.out, "hex=11223344") &&
-                    Contains(r.out, "hex=557064617465642076696120656e67696e65"));
+                    Contains(r.out, "text=\"Updated via engine\""));
         }
         CHECK("container delete -> 0",
               RunCli(cli, "container delete e2e1", outfile).exit_code == 0);
