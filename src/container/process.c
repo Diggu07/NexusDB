@@ -239,17 +239,45 @@ void process_gate_abort(process_gate_t *gate)
 
 long process_spawn_placeholder(void)
 {
-    pid_t pid = fork();
-    if (pid < 0)
+    int sync_fd[2];
+    pid_t pid;
+    char byte;
+    ssize_t n;
+
+    if (pipe(sync_fd) != 0)
         return -1;
+    if (fcntl(sync_fd[1], F_SETFD, FD_CLOEXEC) != 0) {
+        close(sync_fd[0]);
+        close(sync_fd[1]);
+        return -1;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        close(sync_fd[0]);
+        close(sync_fd[1]);
+        return -1;
+    }
     if (pid == 0) {
-        /* Child: replace image with a long-lived idler. If exec fails
-         * (no sleep binary), fall back to idling in-process. */
+        close(sync_fd[0]);
         execlp("sleep", "sleep", "3600", (char *)NULL);
+        byte = 1;
+        (void)!write(sync_fd[1], &byte, 1);
         for (;;) {
             pause();
         }
         _exit(127); /* unreachable */
+    }
+
+    close(sync_fd[1]);
+    do {
+        n = read(sync_fd[0], &byte, 1);
+    } while (n < 0 && errno == EINTR);
+    close(sync_fd[0]);
+    if (n < 0) {
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, NULL, 0);
+        return -1;
     }
     return (long)pid;
 }

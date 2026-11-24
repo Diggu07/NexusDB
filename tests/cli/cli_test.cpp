@@ -77,6 +77,18 @@ bool Contains(const std::string& hay, const std::string& needle) {
   return hay.find(needle) != std::string::npos;
 }
 
+std::string ShellQuote(const std::string& value) {
+  std::string out = "'";
+  for (char c : value) {
+    if (c == '\'')
+      out += "'\\''";
+    else
+      out.push_back(c);
+  }
+  out += "'";
+  return out;
+}
+
 bool ExtractPageSlot(const std::string& out, unsigned int* page,
                      unsigned int* slot) {
   const std::size_t pos = out.find("page=");
@@ -133,10 +145,14 @@ int main() {
         RunCli(cli, "frobnicate", outfile).exit_code == 2);
   CHECK("wrong arity -> exit 2",
         RunCli(cli, "insert db1 t1", outfile).exit_code == 2);
-  CHECK("malformed hex -> exit 3",
-        RunCli(cli, "insert db1 t1 zz", outfile).exit_code == 3);
-  CHECK("odd-length hex -> exit 3",
-        RunCli(cli, "insert db1 t1 abc", outfile).exit_code == 3);
+  CHECK("malformed hex with --hex -> exit 3",
+        RunCli(cli, "insert db1 t1 --hex zz", outfile).exit_code == 3);
+  CHECK("odd-length hex with --hex -> exit 3",
+        RunCli(cli, "insert db1 t1 --hex abc", outfile).exit_code == 3);
+  CHECK("--hex without payload -> exit 2",
+        RunCli(cli, "insert db1 t1 --hex", outfile).exit_code == 2);
+  CHECK("help documents text records",
+        Contains(RunCli(cli, "help insert", outfile).out, "UTF-8 text"));
   CHECK("traversal name -> exit 3",
         RunCli(cli, "db init ../evil", outfile).exit_code == 3);
   CHECK("missing table -> exit 4",
@@ -162,6 +178,8 @@ int main() {
   CHECK("db init -> 0", RunCli(cli, "db init db1", outfile).exit_code == 0);
   CHECK("table create -> 0",
         RunCli(cli, "table create db1 t1", outfile).exit_code == 0);
+  CHECK("text table create -> 0",
+        RunCli(cli, "table create db1 text", outfile).exit_code == 0);
   {
     CliResult r = RunCli(cli, "table list db1", outfile);
     CHECK("table list -> 0 and shows t1",
@@ -170,7 +188,7 @@ int main() {
 
   unsigned int page = 0, slot = 0;
   {
-    CliResult r = RunCli(cli, "insert db1 t1 deadbeefcafe", outfile);
+    CliResult r = RunCli(cli, "insert db1 t1 --hex deadbeefcafe", outfile);
     CHECK("insert -> 0", r.exit_code == 0);
     CHECK("insert reports page/slot", ExtractPageSlot(r.out, &page, &slot));
   }
@@ -188,7 +206,7 @@ int main() {
   }
   {
     std::ostringstream cmd;
-    cmd << "update db1 t1 " << page << " " << slot << " 00ff00ff";
+    cmd << "update db1 t1 " << page << " " << slot << " --hex 00ff00ff";
     CHECK("update -> 0", RunCli(cli, cmd.str(), outfile).exit_code == 0);
   }
   {
@@ -220,6 +238,62 @@ int main() {
     CHECK("scan after delete reports none",
           r.exit_code == 0 && Contains(r.out, "no records"));
   }
+
+  // ---- text records are the default; bytes are verified as hexadecimal ----
+  unsigned int text_page = 0, text_slot = 0;
+  {
+    CliResult r = RunCli(cli, "insert db1 text " + ShellQuote("Hello World"),
+                         outfile);
+    CHECK("text insert -> 0", r.exit_code == 0);
+    CHECK("text insert reports page/slot",
+          ExtractPageSlot(r.out, &text_page, &text_slot));
+  }
+  {
+    std::ostringstream cmd;
+    cmd << "get db1 text " << text_page << " " << text_slot;
+    CliResult r = RunCli(cli, cmd.str(), outfile);
+    CHECK("get text returns exact UTF-8 bytes",
+          r.exit_code == 0 && Contains(r.out, "hex=48656c6c6f20576f726c64"));
+  }
+  CHECK("text with spaces and punctuation -> 0",
+        RunCli(cli, "insert db1 text " + ShellQuote("Hello, NexusDB!"), outfile)
+                .exit_code == 0);
+  CHECK("UTF-8 text -> 0",
+        RunCli(cli, "insert db1 text " + ShellQuote("café"), outfile)
+                .exit_code == 0);
+  CHECK("hex-looking text is literal -> 0",
+        RunCli(cli, "insert db1 text " + ShellQuote("48656c6c6f"), outfile)
+                .exit_code == 0);
+  {
+    CliResult r = RunCli(cli, "scan db1 text", outfile);
+    CHECK("scan preserves all text bytes byte-for-byte",
+          r.exit_code == 0 && Contains(r.out, "hex=48656c6c6f20576f726c64") &&
+              Contains(r.out, "hex=48656c6c6f2c204e65787573444221") &&
+              Contains(r.out, "hex=636166c3a9") &&
+              Contains(r.out, "hex=34383635366336633666"));
+  }
+  {
+    std::ostringstream cmd;
+    cmd << "update db1 text " << text_page << " " << text_slot << " "
+        << ShellQuote("Updated record");
+    CHECK("text update -> 0", RunCli(cli, cmd.str(), outfile).exit_code == 0);
+    cmd.str("");
+    cmd << "get db1 text " << text_page << " " << text_slot;
+    CliResult r = RunCli(cli, cmd.str(), outfile);
+    CHECK("get after text update returns exact bytes",
+          r.exit_code == 0 && Contains(r.out, "hex=55706461746564207265636f7264"));
+  }
+  {
+    std::ostringstream cmd;
+    cmd << "update db1 text " << text_page << " " << text_slot
+        << " --hex xyz";
+    CHECK("invalid hex update with --hex -> 3",
+          RunCli(cli, cmd.str(), outfile).exit_code == 3);
+  }
+  CHECK("empty text -> 3",
+        RunCli(cli, "insert db1 text ''", outfile).exit_code == 3);
+  CHECK("empty --hex payload -> 3",
+        RunCli(cli, "insert db1 text --hex ''", outfile).exit_code == 3);
 
   // ---- new grammar: aliases, help topics, units (no cgroup needed) ----
   {
@@ -283,14 +357,27 @@ int main() {
         CHECK("table create while RUNNING -> 0",
               RunCli(cli, "table create e2e1 t", outfile).exit_code == 0);
         {
-          CliResult r = RunCli(cli, "insert e2e1 t 11223344", outfile);
+          CliResult r = RunCli(cli, "insert e2e1 t --hex 11223344", outfile);
           CHECK("insert while RUNNING -> 0 and reports page/slot",
                 r.exit_code == 0 && Contains(r.out, "inserted page="));
+          CliResult text =
+              RunCli(cli, "insert e2e1 t " + ShellQuote("Hello from NexusDB"),
+                     outfile);
+          unsigned int running_page = 0, running_slot = 0;
+          CHECK("text insert while RUNNING -> 0", text.exit_code == 0);
+          CHECK("text insert while RUNNING reports page/slot",
+                ExtractPageSlot(text.out, &running_page, &running_slot));
+          std::ostringstream update;
+          update << "update e2e1 t " << running_page << " " << running_slot
+                 << " " << ShellQuote("Updated via engine");
+          CHECK("text update while RUNNING -> 0",
+                RunCli(cli, update.str(), outfile).exit_code == 0);
         }
         {
           CliResult r = RunCli(cli, "scan e2e1 t", outfile);
-          CHECK("scan while RUNNING shows record",
-                r.exit_code == 0 && Contains(r.out, "hex=11223344"));
+          CHECK("scan while RUNNING shows hex and text records",
+                r.exit_code == 0 && Contains(r.out, "hex=11223344") &&
+                    Contains(r.out, "hex=557064617465642076696120656e67696e65"));
         }
         {
           CliResult r = RunCli(cli, "exec e2e1 ping", outfile);
@@ -308,8 +395,9 @@ int main() {
         // directly once the engine has shut down.
         {
           CliResult r = RunCli(cli, "scan e2e1 t", outfile);
-          CHECK("scan after stop shows persisted record",
-                r.exit_code == 0 && Contains(r.out, "hex=11223344"));
+          CHECK("scan after stop shows persisted hex and text records",
+                r.exit_code == 0 && Contains(r.out, "hex=11223344") &&
+                    Contains(r.out, "hex=557064617465642076696120656e67696e65"));
         }
         CHECK("container delete -> 0",
               RunCli(cli, "container delete e2e1", outfile).exit_code == 0);

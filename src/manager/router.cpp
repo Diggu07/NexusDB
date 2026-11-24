@@ -390,9 +390,11 @@ const char* HelpText() {
       "  nexusdb db init <name>\n"
       "  nexusdb table create <name> <table>\n"
       "  nexusdb table list <name>\n"
-      "  nexusdb insert <name> <table> <hex-data>\n"
+      "  nexusdb insert <name> <table> \"<text>\"\n"
+      "  nexusdb insert <name> <table> --hex <hex-data>\n"
       "  nexusdb get <name> <table> <page-id> <slot-id>\n"
-      "  nexusdb update <name> <table> <page-id> <slot-id> <hex-data>\n"
+      "  nexusdb update <name> <table> <page-id> <slot-id> \"<text>\"\n"
+      "  nexusdb update <name> <table> <page-id> <slot-id> --hex <hex-data>\n"
       "  nexusdb delete <name> <table> <page-id> <slot-id>\n"
       "  nexusdb scan <name> <table>\n"
       "\n"
@@ -402,8 +404,10 @@ const char* HelpText() {
       "Memory sizes accept plain bytes or binary suffixes: B, K/KB, M/MB, G/GB\n"
       "(e.g. 256M, 1G). 0 means unlimited. CPU is a percentage (0..100).\n"
       "\n"
-      "Records are supplied/returned as hexadecimal (even length). The database\n"
-      "for <name> lives in $NEXUSDB_DATA_ROOT/<name> (default ./nexusdb_data).\n"
+      "Record input is UTF-8 text by default; its exact bytes are stored. Use\n"
+      "--hex for binary/hexadecimal input (even length, no auto-detection).\n"
+      "get/scan still return record bytes as hexadecimal. The database for\n"
+      "<name> lives in $NEXUSDB_DATA_ROOT/<name> (default ./nexusdb_data).\n"
       "When the container is RUNNING the CLI talks to its db_engine over\n"
       "<data-dir>/nexusdb.sock; when it is stopped the CLI opens the database\n"
       "directly. `exec <name>` with no command is an interactive request loop.\n"
@@ -456,6 +460,23 @@ const char* HelpTopic(const std::string& name) {
         "  nexusdb exec demo ping\n"
         "  nexusdb exec demo stats\n"
         "  nexusdb exec demo\n";
+  }
+  if (name == "insert") {
+    return
+        "usage: nexusdb insert <name> <table> \"<text>\"\n"
+        "       nexusdb insert <name> <table> --hex <hex-data>\n"
+        "\n"
+        "Stores the exact UTF-8 text bytes of <text> by default. Pass --hex to supply\n"
+        "binary data as an even-length hexadecimal string; no auto-detection is\n"
+        "performed, so \"48656c6c6f\" without --hex is stored as literal text.\n";
+  }
+  if (name == "update") {
+    return
+        "usage: nexusdb update <name> <table> <page-id> <slot-id> \"<text>\"\n"
+        "       nexusdb update <name> <table> <page-id> <slot-id> --hex <hex-data>\n"
+        "\n"
+        "Replaces a record with the exact UTF-8 bytes of <text> by default.\n"
+        "Pass --hex for even-length hexadecimal binary input.\n";
   }
   if (name == "start")
     return "usage: nexusdb start <name>\n";
@@ -608,7 +629,9 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
   // insert <name> <table> <hex>
   if (cmd == "insert") {
     if (args.size() != 4)
-      return Usage(error, "usage: nexusdb insert <name> <table> <hex-data>");
+      return Usage(error,
+                   "usage: nexusdb insert <name> <table> \"<text>\" | --hex "
+                   "<hex-data>");
     out->kind = CommandKind::kInsert;
     out->name = args[1];
     out->table = args[2];
@@ -642,9 +665,10 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
   if (cmd == "update") {
     if (args.size() != 6)
       return Usage(error,
-                   "usage: nexusdb update <name> <table> <page-id> <slot-id> "
-                   "<hex-data>");
+                    "usage: nexusdb update <name> <table> <page-id> <slot-id> "
+                    "\"<text>\" | --hex <hex-data>");
     out->kind = CommandKind::kUpdate;
+
     out->name = args[1];
     out->table = args[2];
     std::uint64_t v = 0;

@@ -57,6 +57,16 @@ expect_equal() {
   g_checks=$((g_checks + 1))
 }
 
+expect_contains() {
+  local desc=$1 needle=$2 hay=$3
+  if [[ $hay == *"$needle"* ]]; then
+    pass "$desc"
+  else
+    fail "$desc (missing \`$needle' in \`$hay')"
+  fi
+  g_checks=$((g_checks + 1))
+}
+
 # expect_rc <description> <expected-rc> <actual-rc>
 expect_rc() {
   local desc=$1 expected=$2 actual=$3
@@ -380,15 +390,10 @@ else
 fi
 g_checks=$((g_checks + 1))
 
-# 11b. Record operations preserve argument boundaries (incl. numeric ids and
-# hex payloads that contain shell-significant characters).
-capture "insert" insert testdb students '48656c6c6f'
-expect_rc "11b. nexus insert (rc=0)" 0 "$rc"
-if [[ $se == *48656c6c6f* || $so == *'inserted page='* ]]; then
-  :
-else
-  fail "11b. insert output lost: so=\`$so' se=\`$se'"
-fi
+# 11b. Record operations preserve argument boundaries and exact bytes.
+capture "insert hex" insert testdb students --hex 48656c6c6f
+expect_rc "11b. explicit hex insert (rc=0)" 0 "$rc"
+expect_contains "11b. explicit hex insert output" 'inserted page=' "$so"
 if [[ $so =~ page=([0-9]+)[[:space:]]slot=([0-9]+) ]]; then
   PAGE=${BASH_REMATCH[1]}
   SLOT=${BASH_REMATCH[2]}
@@ -396,21 +401,54 @@ if [[ $so =~ page=([0-9]+)[[:space:]]slot=([0-9]+) ]]; then
   g_checks=$((g_checks + 1))
   capture "get" get testdb students "$PAGE" "$SLOT"
   expect_rc "11b. nexus get page slot (rc=0)" 0 "$rc"
-  if [[ $so == *'len=5'* && $so == *'hex=48656c6c6f'* ]]; then
-    pass "11b. get returns the inserted hex payload unchanged"
-  else
-    fail "11b. get returns the inserted hex payload unchanged (got \`$so')"
-  fi
-  g_checks=$((g_checks + 1))
-  capture "update" update testdb students "$PAGE" "$SLOT" '576f726c64'
-  expect_rc "11b. nexus update page slot hex (rc=0)" 0 "$rc"
+  expect_contains "11b. get returns the explicit hex payload unchanged" \
+    'hex=48656c6c6f' "$so"
+  capture "update hex" update testdb students "$PAGE" "$SLOT" --hex 576f726c64
+  expect_rc "11b. explicit hex update (rc=0)" 0 "$rc"
   capture "get" get testdb students "$PAGE" "$SLOT"
-  if [[ $so == *'hex=576f726c64'* ]]; then
-    pass "11b. update + get round-trip the new payload"
+  expect_contains "11b. explicit hex update + get round-trip" \
+    'hex=576f726c64' "$so"
+
+  capture "insert text" insert testdb students 'Hello from NexusDB'
+  expect_rc "11b. text insert with spaces (rc=0)" 0 "$rc"
+  if [[ $so =~ page=([0-9]+)[[:space:]]slot=([0-9]+) ]]; then
+    TEXT_PAGE=${BASH_REMATCH[1]}
+    TEXT_SLOT=${BASH_REMATCH[2]}
+    capture "get text" get testdb students "$TEXT_PAGE" "$TEXT_SLOT"
+    expect_contains "11b. text insert preserves UTF-8 bytes" \
+      'hex=48656c6c6f2066726f6d204e657875734442' "$so"
+    capture "update text" update testdb students "$TEXT_PAGE" "$TEXT_SLOT" \
+      'Updated record'
+    expect_rc "11b. text update (rc=0)" 0 "$rc"
+    capture "get text" get testdb students "$TEXT_PAGE" "$TEXT_SLOT"
+    expect_contains "11b. text update preserves UTF-8 bytes" \
+      'hex=55706461746564207265636f7264' "$so"
   else
-    fail "11b. update + get round-trip the new payload (got \`$so')"
+    fail "11b. text insert reports record coordinates (got \`$so')"
   fi
-  g_checks=$((g_checks + 1))
+
+  capture "insert punctuation" insert testdb students 'Hello, NexusDB!'
+  expect_rc "11b. text insert with punctuation (rc=0)" 0 "$rc"
+  capture "insert utf8" insert testdb students 'café ☕'
+  expect_rc "11b. UTF-8 text insert (rc=0)" 0 "$rc"
+  capture "insert hex-looking text" insert testdb students '48656c6c6f'
+  expect_rc "11b. hex-looking text insert (rc=0)" 0 "$rc"
+  capture "scan" scan testdb students
+  expect_rc "11b. nexus scan records (rc=0)" 0 "$rc"
+  expect_contains "11b. scan preserves updated text bytes" \
+    'hex=55706461746564207265636f7264' "$so"
+  expect_contains "11b. scan preserves punctuation bytes" \
+    'hex=48656c6c6f2c204e65787573444221' "$so"
+  expect_contains "11b. scan preserves multi-byte UTF-8 bytes" \
+    'hex=636166c3a920e29895' "$so"
+  expect_contains "11b. scan stores hex-looking input as literal text" \
+    'hex=34383635366336633666' "$so"
+
+  capture "insert invalid hex" insert testdb students --hex zz
+  expect_rc "11b. invalid hex with --hex (rc=3)" 3 "$rc"
+  capture "insert odd hex" insert testdb students --hex abc
+  expect_rc "11b. odd-length hex with --hex (rc=3)" 3 "$rc"
+
   capture "delete record" delete testdb students "$PAGE" "$SLOT"
   expect_rc "11b. nexus delete page slot (rc=0)" 0 "$rc"
   capture "get" get testdb students "$PAGE" "$SLOT"

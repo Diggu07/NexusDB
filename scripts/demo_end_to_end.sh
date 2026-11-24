@@ -104,8 +104,8 @@ run "db init demo"            "$CLI" db init demo
 run "table create demo users" "$CLI" table create demo users
 run "table list demo"         "$CLI" table list demo
 
-echo "--- insert sample record (hex debadbeefcafe) ---"
-INSERT_OUT=$("$CLI" insert demo users deadbeefcafe 2>&1) || fail=1
+echo "--- insert sample record (text 'Hello from NexusDB') ---"
+INSERT_OUT=$("$CLI" insert demo users 'Hello from NexusDB' 2>&1) || fail=1
 echo "    $INSERT_OUT"
 PAGE=$(echo "$INSERT_OUT" | sed -n 's/.*page=\([0-9]*\).*/\1/p')
 SLOT=$(echo "$INSERT_OUT" | sed -n 's/.*slot=\([0-9]*\).*/\1/p')
@@ -116,14 +116,14 @@ else
     fail=1
 fi
 
-echo "--- get after insert (expect hex=deadbeefcafe) ---"
+echo "--- get after insert (expect hex=48656c6c6f2066726f6d204e657875734442) ---"
 "$CLI" get demo users "$PAGE" "$SLOT" || fail=1
 echo "--- scan table (expect one record) ---"
 "$CLI" scan demo users || fail=1
 
-run "update record to 00ff00ff" \
-    "$CLI" update demo users "$PAGE" "$SLOT" 00ff00ff
-echo "--- get after update (expect hex=00ff00ff) ---"
+run "update record to text 'Updated record'" \
+    "$CLI" update demo users "$PAGE" "$SLOT" 'Updated record'
+echo "--- get after update (expect hex=55706461746564207265636f7264) ---"
 "$CLI" get demo users "$PAGE" "$SLOT" || fail=1
 
 run "delete record" "$CLI" delete demo users "$PAGE" "$SLOT"

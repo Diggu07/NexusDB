@@ -279,7 +279,13 @@ build/nexusdb scan <name> <table>
   `exec <name> ping` issues a single request, and `exec <name> stats` reports
   pages, pool occupancy, real buffer-pool cache hit/miss counters, and the
   duration of the last successful query command (`n/a` before the first query).
-- Record payloads are hexadecimal (even length), e.g. `insert db1 t1 deadbeef`.
+- Record input is UTF-8 text by default: `insert db1 t1 "Hello World"` stores
+  the exact text bytes; `update db1 t1 <page> <slot> "Updated record"` replaces
+  a record with text. Use `--hex` for binary/hex input (even length, no
+  auto-detection): `insert db1 t1 --hex deadbeef` and
+  `update db1 t1 <page> <slot> --hex 00ff`. `get` and `scan` still display bytes
+  as hexadecimal; a hex-looking string without `--hex` is stored as literal
+  text.
 - Exit codes: `0` ok, `1` unmapped operational error, `2` usage, `3` invalid
   argument, `4` not found, `5` I/O error, `6` bad state, `7` buffer full,
   `8` out of memory.
@@ -347,7 +353,7 @@ status
 list
 init
 table create students
-insert students 48656c6c6f
+insert students "Hello from NexusDB"
 scan students
 get students <page> <slot>
 exec ping

@@ -48,6 +48,47 @@ std::string SelfPath(const char* argv0) {
   return argv0 != nullptr ? std::string(argv0) : std::string();
 }
 
+std::string TextToHex(const std::string& text) {
+  static const char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(text.size() * 2);
+  for (unsigned char byte : text) {
+    out.push_back(kHex[(byte >> 4) & 0xF]);
+    out.push_back(kHex[byte & 0xF]);
+  }
+  return out;
+}
+
+std::size_t RecordPayloadIndex(const std::vector<std::string>& args) {
+  if (args.empty())
+    return 0;
+  if (args[0] == "insert")
+    return 3;
+  if (args[0] == "update")
+    return 5;
+  return 0;
+}
+
+bool PrepareRecordArgs(std::vector<std::string>* args, std::string* error) {
+  const std::size_t index = RecordPayloadIndex(*args);
+  if (index == 0 || args->size() <= index)
+    return true;
+  if ((*args)[index] != "--hex") {
+    (*args)[index] = TextToHex((*args)[index]);
+    return true;
+  }
+  if (args->size() == index + 1) {
+    *error = args->front() == "insert"
+                 ? "usage: nexusdb insert <name> <table> --hex <hex-data>"
+                 : "usage: nexusdb update <name> <table> <page-id> <slot-id> "
+                   "--hex <hex-data>";
+    return false;
+  }
+  args->erase(args->begin() +
+              static_cast<std::vector<std::string>::difference_type>(index));
+  return true;
+}
+
 #ifndef _WIN32
 // Only `start` (and `container start`) needs to migrate the freshly spawned
 // workload into the delegated cgroup. create/status/exec/stop/delete operate on
@@ -124,6 +165,12 @@ int main(int argc, char** argv) {
   args.reserve(static_cast<std::size_t>(argc));
   for (int i = 1; i < argc; ++i)
     args.emplace_back(argv[i]);
+
+  std::string arg_error;
+  if (!PrepareRecordArgs(&args, &arg_error)) {
+    std::fprintf(stderr, "%s\n", arg_error.c_str());
+    return nexusdb::cli::kUsage;
+  }
 
   const std::string self = SelfPath(argc > 0 ? argv[0] : nullptr);
 #ifndef _WIN32
