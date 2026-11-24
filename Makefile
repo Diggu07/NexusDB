@@ -203,7 +203,14 @@ BUFFER_OBJS := $(BUILD_DIR)/page.o \
 # its workload: opens the full Database (storage + WAL + catalog/executor),
 # runs recovery, and flushes/closes cleanly on SIGTERM.
 ENGINE_BIN := $(BUILD_DIR)/db_engine$(EXE)
-ENGINE_OBJS := $(DB_STACK_OBJS) $(BUILD_DIR)/db_engine.o
+ENGINE_OBJS := $(DB_STACK_OBJS) $(BUILD_DIR)/adaptation_policy.o \
+               $(BUILD_DIR)/buffer_pool_adapter.o \
+               $(BUILD_DIR)/resource_monitor.o \
+               $(BUILD_DIR)/cgroup.o \
+               $(BUILD_DIR)/container.o \
+               $(BUILD_DIR)/namespace.o \
+               $(BUILD_DIR)/process.o \
+               $(BUILD_DIR)/db_engine.o
 
 # P3: db_engine executable contract test (direct-exec, POSIX).
 ENG_TEST_BIN := $(BUILD_DIR)/nexus_db_engine_test$(EXE)
@@ -566,7 +573,7 @@ $(BUILD_DIR)/buffer_pool_test.o: tests/db/buffer_pool_test.cpp include/db/buffer
 $(BUFFER_TEST_BIN): $(BUFFER_OBJS)
 	$(CXX) $(CXXFLAGS) $(BUFFER_OBJS) -o $@
 
-$(BUILD_DIR)/db_engine.o: src/db/engine/db_engine.cpp include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/error.h include/common/config.h | $(BUILD_DIR)
+$(BUILD_DIR)/db_engine.o: src/db/engine/db_engine.cpp include/bridge/adaptation_policy.h include/bridge/buffer_pool_adapter.h include/bridge/resource_monitor.h include/container/cgroup.h include/db/buffer_pool.h include/db/page.h include/db/page_storage.h include/common/error.h include/common/config.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 $(ENGINE_BIN): $(ENGINE_OBJS)

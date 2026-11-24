@@ -4,8 +4,9 @@
 // workload. It is deliberately minimal and honest: there is NO SQL parser and
 // NO network listener. It opens the full Database (PageStorage + WAL +
 // BufferPool + Catalog/QueryExecutor), running WAL recovery on startup, keeps
-// the database open, and stays alive until the container asks it to stop, at
-// which point it flushes (WAL-ordered) and closes cleanly. An abrupt
+// the database open, and continuously adapts the pool to the container's real
+// cgroup memory pressure. It stays alive until the container asks it to stop,
+// at which point it flushes (WAL-ordered) and closes cleanly. An abrupt
 // termination leaves the WAL for the next Open.
 //
 // Contract
@@ -32,7 +33,7 @@
 //     the smallest sound IPC for the existing file-based architecture.
 //
 //       ping                         -> "OK pong"
-//       stats                        -> "OK" + pages/pool/cache/latency lines
+//       stats                        -> "OK" + pages/pool/cache/latency/adaptation lines
 //       init                         -> "OK initialized" (already open)
 //       table create <name>          -> "OK created table <name>"
 //       table list                   -> "OK" + one table name per line
@@ -90,6 +91,7 @@
 //   shutdown.
 
 #include <cerrno>
+#include <cctype>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -101,9 +103,11 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -112,6 +116,7 @@
 #else
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -120,7 +125,12 @@
 #include <unistd.h>
 #endif
 
+#include "bridge/adaptation_policy.h"
+#include "bridge/buffer_pool_adapter.h"
+#include "bridge/resource_monitor.h"
+#include "common/config.h"
 #include "common/error.h"
+#include "container/cgroup.h"
 #include "db/database.h"
 #include "db/page.h"
 #include "db/page_storage.h"
@@ -140,6 +150,96 @@ constexpr int kExitSocket = 6;
 // Largest accepted --buffer-pool value, so a typo cannot request an absurd
 // allocation. Well above any realistic small database.
 constexpr std::size_t kMaxPoolFrames = 1u << 20;
+constexpr int kAdaptIntervalMs = 500;
+
+struct AdaptationState {
+  nexus_policy_t policy{};
+  nexus_policy_config_t config{};
+  std::string container;
+  std::string cgroup_dir;
+  bool enabled = false;
+};
+
+struct AdaptationStatus {
+  bool enabled = false;
+  bool available = false;
+  nexus_adapt_action_t action = NEXUS_ADAPT_HOLD;
+  nexus_adapt_reason_t reason = NEXUS_REASON_NO_METRICS;
+  unsigned long target_frames = 0;
+  double pressure = 0.0;
+  unsigned long applications = 0;
+  int last_error = NEXUS_OK;
+};
+
+AdaptationState g_adaptation;
+AdaptationStatus g_adapt_status;
+std::mutex g_db_mutex;
+volatile std::sig_atomic_t g_stop = 0;
+
+std::string ContainerNameFromDataDir(const std::string& data_dir) {
+  std::string name = std::filesystem::path(data_dir).filename().string();
+  if (name.empty() || name == "." || name == "..")
+    return std::string();
+  for (char c : name) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (!std::isalnum(u) && c != '-' && c != '_')
+      return std::string();
+  }
+  return name;
+}
+
+std::string CgroupDirFor(const std::string& name) {
+  const char* root = cgroup_root();
+  if (root == nullptr || root[0] == '\0')
+    return std::string();
+  return (std::filesystem::path(root) / name).lexically_normal().string();
+}
+
+void RunAdaptation(nexusdb::Database* db) {
+#ifndef _WIN32
+  sigset_t blocked;
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGINT);
+  sigaddset(&blocked, SIGTERM);
+  (void)pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
+#endif
+  nexus_resource_snapshot_t snapshot;
+  while (!g_stop) {
+    for (int tick = 0; tick < kAdaptIntervalMs / 20 && !g_stop; ++tick)
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (g_stop)
+      break;
+
+    const int read_rc =
+        nexus_bridge_read_cgroup(g_adaptation.cgroup_dir.c_str(), &snapshot);
+    {
+      std::lock_guard<std::mutex> lock(g_db_mutex);
+      g_adapt_status.available = (read_rc == NEXUS_OK && snapshot.valid != 0);
+      g_adapt_status.last_error = read_rc;
+      if (!g_adapt_status.available) {
+        g_adapt_status.action = NEXUS_ADAPT_HOLD;
+        g_adapt_status.reason = NEXUS_REASON_NO_METRICS;
+        continue;
+      }
+
+      nexus_adapt_decision_t decision;
+      const int rc = nexus_policy_apply(
+          &g_adaptation.policy, &g_adaptation.config, &snapshot,
+          static_cast<unsigned long>(db->pool()->capacity()),
+          nexus_bridge_buffer_pool_request, db->pool(), &decision);
+      g_adapt_status.action = decision.action;
+      g_adapt_status.reason = decision.reason;
+      g_adapt_status.target_frames = decision.target_frames;
+      g_adapt_status.pressure = decision.pressure;
+      g_adapt_status.last_error = rc;
+      if (rc == NEXUS_OK &&
+          (decision.action == NEXUS_ADAPT_GROW ||
+           decision.action == NEXUS_ADAPT_SHRINK)) {
+        ++g_adapt_status.applications;
+      }
+    }
+  }
+}
 
 void Usage(const char* prog) {
   std::fprintf(stderr,
@@ -195,10 +295,6 @@ void IdleOnce() {
 
 // Stop flag + handler. The handler must be async-signal-safe: it only sets a
 // sig_atomic_t; all flushing happens after the idle loop returns.
-namespace {
-volatile std::sig_atomic_t g_stop = 0;
-}  // namespace
-
 extern "C" void NexusEngineOnSignal(int sig) {
   (void)sig;
   g_stop = 1;
@@ -378,6 +474,24 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
     else
       latency << "n/a";
     out += "query_latency_ms " + latency.str() + "\n";
+    out += "adaptation_enabled " +
+           std::string(g_adapt_status.enabled ? "yes" : "no") + "\n";
+    if (g_adapt_status.enabled) {
+      out += "adaptation_container " + g_adaptation.container + "\n";
+      out += "adaptation_available " +
+             std::string(g_adapt_status.available ? "yes" : "no") + "\n";
+      out += "adaptation_action " +
+             std::string(nexus_adapt_action_str(g_adapt_status.action)) + "\n";
+      out += "adaptation_reason " +
+             std::string(nexus_adapt_reason_str(g_adapt_status.reason)) + "\n";
+      out += "adaptation_target " +
+             std::to_string(g_adapt_status.target_frames) + "\n";
+      std::ostringstream pressure;
+      pressure << std::fixed << std::setprecision(3) << g_adapt_status.pressure;
+      out += "adaptation_pressure " + pressure.str() + "\n";
+      out += "adaptation_applied " +
+             std::to_string(g_adapt_status.applications) + "\n";
+    }
     return out;
   }
 
@@ -643,7 +757,11 @@ void ServeControl(int listen_fd, nexusdb::Database* db) {
     std::string line;
     if (ReadRequest(conn, &line)) {
       bool quit = false;
-      const std::string response = DispatchCommand(db, line, &quit);
+      std::string response;
+      {
+        std::lock_guard<std::mutex> lock(g_db_mutex);
+        response = DispatchCommand(db, line, &quit);
+      }
       WriteAll(conn, response);
       if (quit)
         g_stop = 1;
@@ -825,6 +943,26 @@ int main(int argc, char** argv) {
   (void)socket_path;
 #endif
 
+  std::thread adaptation_thread;
+  const std::string container = ContainerNameFromDataDir(data_dir);
+  if (!container.empty()) {
+    const std::string cgroup_dir = CgroupDirFor(container);
+    if (!cgroup_dir.empty()) {
+      g_adaptation.container = container;
+      g_adaptation.cgroup_dir = cgroup_dir;
+      nexus_policy_config_default(&g_adaptation.config);
+      g_adaptation.config.page_size =
+          static_cast<unsigned long>(nexusdb::kPageSize);
+      g_adaptation.config.max_frames =
+          static_cast<unsigned long>(kMaxPoolFrames);
+      nexus_policy_init(&g_adaptation.policy);
+      g_adaptation.enabled = true;
+      g_adapt_status.enabled = true;
+      g_adapt_status.target_frames = db->pool()->capacity();
+      adaptation_thread = std::thread(RunAdaptation, db.get());
+    }
+  }
+
   std::printf("db_engine: ready pid=%ld data=%s pages=%u pool=%zu",
               CurrentPid(), db_file.string().c_str(), pages, pool_frames);
 #ifndef _WIN32
@@ -853,6 +991,10 @@ int main(int argc, char** argv) {
   while (!g_stop)
     IdleOnce();
 #endif
+
+  g_stop = 1;
+  if (adaptation_thread.joinable())
+    adaptation_thread.join();
 
   // 6. Graceful shutdown: flush all dirty pages (WAL-ordered), checkpoint and
   // close the log, then close storage.

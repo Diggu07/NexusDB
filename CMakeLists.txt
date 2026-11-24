@@ -282,6 +282,13 @@ add_executable(nexusdb_engine_demo
 # SIGTERM/SIGINT, then flushes (WAL-ordered) and closes. No SQL, no network
 # listener, no client/server protocol.
 add_executable(db_engine
+  src/bridge/adaptation_policy.c
+  src/bridge/buffer_pool_adapter.cpp
+  src/bridge/resource_monitor.c
+  src/container/cgroup.c
+  src/container/container.c
+  src/container/namespace.c
+  src/container/process.c
   src/db/storage/page.cpp
   src/db/storage/page_storage.cpp
   src/db/buffer/buffer_pool.cpp
