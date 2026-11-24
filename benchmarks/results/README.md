@@ -3,8 +3,7 @@
 The three required scenarios were re-run on 2026-11-23 (container clock) on
 Linux (WSL2, kernel 6.18.58.1, GCC/g++ 15.2.0, cgroups v2) with the integrated
 DB engine, in the delegated `/sys/fs/cgroup/nexusdb` subtree. Every scenario
-finished with `status: RUN (completed)`. The original 2026-10-18 files remain
-as historical evidence.
+finished with `status: RUN (completed)`.
 
 ## Scenario manifest
 

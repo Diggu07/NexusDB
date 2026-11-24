@@ -126,14 +126,14 @@ nothing.
 ## Status: RUN (completed)
 
 The three scenarios have been executed on a supported Linux host (WSL2, kernel
-6.18, GCC 15.2.0) with the integrated DB engine and cgroups v2, inside a
+6.18.58.1, GCC 15.2.0) with the integrated DB engine and cgroups v2, inside a
 delegated cgroup scope. Real result files and the environment capture live in
 `benchmarks/results/`:
 
-- `env.20261018T155310Z.txt` — machine/environment capture
-- `bench_512MiB_sequential.20261018T155310Z.txt`
-- `bench_256MiB_sequential.20261018T155310Z.txt`
-- `bench_128MiB_sequential.20261018T155310Z.txt`
+- `env.20261123T195229Z.txt` — machine/environment capture
+- `bench_512MiB_sequential.20261123T195229Z.txt`
+- `bench_256MiB_sequential.20261123T195229Z.txt`
+- `bench_128MiB_sequential.20261123T195229Z.txt`
 
 Each result is `status: RUN (completed)` with measured resource/pool/latency
 fields and an explicit `unavailable_metrics` block. See
