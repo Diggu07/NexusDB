@@ -175,7 +175,8 @@ CONTAINER_STACK_OBJS := $(BUILD_DIR)/container.o \
                         $(BUILD_DIR)/process.o
 
 MANAGER_OBJS := $(BUILD_DIR)/manager.o \
-                $(BUILD_DIR)/router.o
+                $(BUILD_DIR)/router.o \
+                $(BUILD_DIR)/resource_monitor.o
 
 CLI_BIN := $(BUILD_DIR)/nexusdb$(EXE)
 CLI_OBJS := $(DB_STACK_OBJS) $(MANAGER_OBJS) $(CONTAINER_STACK_OBJS) \

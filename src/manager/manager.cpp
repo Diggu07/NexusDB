@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -22,6 +23,7 @@
 #include <unistd.h>
 #endif
 
+#include "bridge/resource_monitor.h"
 #include "container/cgroup.h"
 #include "container/container.h"
 #include "db/catalog.h"
@@ -60,6 +62,18 @@ Status FromContainerRc(int rc, const std::string& what) {
   if (rc == NEXUS_OK)
     return Status::Ok();
   std::string message = what + ": " + container_strerror(rc);
+  if (rc == NEXUS_ERR_PROCESS) {
+    const char* detail = cgroup_last_error();
+    if (detail != nullptr && detail[0] != '\0')
+      message += " (" + std::string(detail) + ")";
+  }
+  return Err(MapContainerRc(rc), std::move(message));
+}
+
+Status FromBridgeRc(int rc, const std::string& what) {
+  if (rc == NEXUS_OK)
+    return Status::Ok();
+  std::string message = what + ": " + nexus_bridge_strerror(rc);
   if (rc == NEXUS_ERR_PROCESS) {
     const char* detail = cgroup_last_error();
     if (detail != nullptr && detail[0] != '\0')
@@ -239,7 +253,18 @@ struct Manager::ContainerMeta {
   std::string engine;
   std::string cgroup;
   long pid = -1;
+  unsigned long long pid_start_ticks = 0;
+  std::string pid_comm;
   int state = NEXUS_CREATED;
+  int ns_pid = 0;
+  int ns_mount = 0;
+  int ns_net = 0;
+  int ns_uts = 0;
+  int ns_ipc = 0;
+
+  bool NamespaceRequested() const {
+    return ns_pid || ns_mount || ns_net || ns_uts || ns_ipc;
+  }
 };
 
 Manager::Manager() : data_root_(ResolveDataRoot()) {}
@@ -312,8 +337,22 @@ bool Manager::LoadMeta(const std::string& name, ContainerMeta* out) const {
       meta.cgroup = val;
     else if (key == "pid")
       meta.pid = std::strtol(val.c_str(), nullptr, 10);
+    else if (key == "pid_start_ticks")
+      meta.pid_start_ticks = std::strtoull(val.c_str(), nullptr, 10);
+    else if (key == "pid_comm")
+      meta.pid_comm = val;
     else if (key == "state")
       meta.state = static_cast<int>(std::strtol(val.c_str(), nullptr, 10));
+    else if (key == "ns_pid")
+      meta.ns_pid = static_cast<int>(std::strtol(val.c_str(), nullptr, 10));
+    else if (key == "ns_mount")
+      meta.ns_mount = static_cast<int>(std::strtol(val.c_str(), nullptr, 10));
+    else if (key == "ns_net")
+      meta.ns_net = static_cast<int>(std::strtol(val.c_str(), nullptr, 10));
+    else if (key == "ns_uts")
+      meta.ns_uts = static_cast<int>(std::strtol(val.c_str(), nullptr, 10));
+    else if (key == "ns_ipc")
+      meta.ns_ipc = static_cast<int>(std::strtol(val.c_str(), nullptr, 10));
   }
   *out = std::move(meta);
   return true;
@@ -332,7 +371,14 @@ Status Manager::SaveMeta(const ContainerMeta& meta) const {
       << "engine=" << meta.engine << "\n"
       << "cgroup=" << meta.cgroup << "\n"
       << "pid=" << meta.pid << "\n"
-      << "state=" << meta.state << "\n";
+      << "pid_start_ticks=" << meta.pid_start_ticks << "\n"
+      << "pid_comm=" << meta.pid_comm << "\n"
+      << "state=" << meta.state << "\n"
+      << "ns_pid=" << meta.ns_pid << "\n"
+      << "ns_mount=" << meta.ns_mount << "\n"
+      << "ns_net=" << meta.ns_net << "\n"
+      << "ns_uts=" << meta.ns_uts << "\n"
+      << "ns_ipc=" << meta.ns_ipc << "\n";
   if (!out)
     return Err(DbError::kIoError, "failed writing metadata for " + meta.name);
   return Status::Ok();
@@ -349,12 +395,29 @@ Status Manager::Adopt(const std::string& name, ContainerMeta* out) const {
   ContainerMeta meta;
   if (!LoadMeta(name, &meta))
     return Err(DbError::kNotFound, "no such container: " + name);
-  const int rc = container_adopt(
+  nexus_namespace_config_t ns{};
+  const bool isolated = meta.NamespaceRequested();
+  if (isolated) {
+    ns.isolate_pid = meta.ns_pid;
+    ns.isolate_mount = meta.ns_mount;
+    ns.isolate_net = meta.ns_net;
+    ns.isolate_uts = meta.ns_uts;
+    ns.isolate_ipc = meta.ns_ipc;
+    ns.hostname = meta.name.c_str();
+  }
+  const int rc = container_adopt_ex(
       meta.name.c_str(), meta.id.c_str(), meta.memory, meta.cpu,
       meta.engine.empty() ? "" : meta.engine.c_str(),
-      meta.cgroup.empty() ? "" : meta.cgroup.c_str(), meta.pid, meta.state);
+      meta.cgroup.empty() ? "" : meta.cgroup.c_str(), meta.pid, meta.state,
+      isolated ? &ns : nullptr);
   if (rc != NEXUS_OK)
     return FromContainerRc(rc, "adopt container " + name);
+  if (meta.pid_start_ticks != 0) {
+    const int id_rc = container_set_process_identity(
+        meta.name.c_str(), meta.pid_start_ticks, meta.pid_comm.c_str());
+    if (id_rc != NEXUS_OK)
+      return FromContainerRc(id_rc, "adopt process identity for " + name);
+  }
   if (out != nullptr)
     *out = std::move(meta);
   return Status::Ok();
@@ -365,7 +428,8 @@ Status Manager::Adopt(const std::string& name, ContainerMeta* out) const {
 Status Manager::ContainerCreate(const std::string& name,
                                 unsigned long memory_bytes,
                                 unsigned int cpu_percent,
-                                const std::string& engine) {
+                                const std::string& engine,
+                                bool isolate_namespaces) {
   if (!IsValidName(name))
     return Err(DbError::kInvalidArgument, "invalid container name: " + name);
   ContainerMeta existing;
@@ -377,9 +441,12 @@ Status Manager::ContainerCreate(const std::string& name,
     return s;
 
   const char* engine_arg = engine.empty() ? nullptr : engine.c_str();
+  nexus_namespace_config_t ns{};
+  if (isolate_namespaces)
+    namespace_config_default(&ns, name.c_str());
   cgroup_clear_error();
   const int rc = container_create_ex(name.c_str(), memory_bytes, cpu_percent,
-                                     engine_arg, nullptr);
+                                     engine_arg, isolate_namespaces ? &ns : nullptr);
   if (rc != NEXUS_OK)
     return FromContainerRc(rc, "create container " + name);
 
@@ -389,11 +456,18 @@ Status Manager::ContainerCreate(const std::string& name,
   meta.cpu = cpu_percent;
   meta.engine = engine;
   meta.pid = -1;
+  meta.pid_start_ticks = 0;
+  meta.pid_comm.clear();
   meta.state = NEXUS_CREATED;
   const nexus_container_t* c = container_get(name.c_str());
   if (c != nullptr) {
     meta.id = c->id;
     meta.cgroup = c->cgroup_path;
+    meta.ns_pid = c->ns_pid;
+    meta.ns_mount = c->ns_mount;
+    meta.ns_net = c->ns_net;
+    meta.ns_uts = c->ns_uts;
+    meta.ns_ipc = c->ns_ipc;
   }
   return SaveMeta(meta);
 }
@@ -420,6 +494,10 @@ Status Manager::ContainerStart(const std::string& name) {
 
   const nexus_container_t* c = container_get(name.c_str());
   meta.pid = (c != nullptr) ? c->pid : -1;
+  char pid_comm[64];
+  if (container_get_process_identity(name.c_str(), &meta.pid_start_ticks,
+                                     pid_comm, sizeof(pid_comm)) == NEXUS_OK)
+    meta.pid_comm = pid_comm;
 
 #ifndef _WIN32
   // The runtime only guarantees a successful exec, not that the engine
@@ -469,6 +547,8 @@ Status Manager::ContainerStart(const std::string& name) {
     cgroup_clear_error();
     (void)container_stop(name.c_str());
     meta.pid = -1;
+    meta.pid_start_ticks = 0;
+    meta.pid_comm.clear();
     meta.state = NEXUS_STOPPED;
     (void)SaveMeta(meta);
     return Err(DbError::kBadState,
@@ -495,6 +575,8 @@ Status Manager::ContainerStop(const std::string& name) {
     return FromContainerRc(rc, "stop container " + name);
 
   meta.pid = -1;
+  meta.pid_start_ticks = 0;
+  meta.pid_comm.clear();
   meta.state = NEXUS_STOPPED;
   return SaveMeta(meta);
 }
@@ -529,6 +611,89 @@ Status Manager::ContainerStatus(const std::string& name, std::string* out) {
     return FromContainerRc(rc, "status container " + name);
   if (out != nullptr)
     *out = buf;
+  return Status::Ok();
+}
+
+Status Manager::ContainerResources(const std::string& name, std::string* out) {
+  if (!IsValidName(name))
+    return Err(DbError::kInvalidArgument, "invalid container name: " + name);
+  if (out == nullptr)
+    return Err(DbError::kInvalidArgument, "null output");
+  ContainerMeta meta;
+  Status s = Adopt(name, &meta);
+  if (!s.ok())
+    return s;
+
+  nexus_resource_snapshot_t snap;
+  cgroup_clear_error();
+  const int rc = nexus_bridge_read_cgroup(meta.cgroup.c_str(), &snap);
+  if (rc != NEXUS_OK)
+    return FromBridgeRc(rc, "read resources for container " + name);
+
+  const char* state = "UNKNOWN";
+  switch (meta.state) {
+    case NEXUS_CREATED:
+      state = "CREATED";
+      break;
+    case NEXUS_RUNNING:
+      state = "RUNNING";
+      break;
+    case NEXUS_STOPPED:
+      state = "STOPPED";
+      break;
+    case NEXUS_DELETED:
+      state = "DELETED";
+      break;
+    default:
+      break;
+  }
+
+  std::ostringstream os;
+  os << "Container: " << meta.name << "\n"
+     << "State: " << state << "\n"
+     << "Cgroup: " << meta.cgroup << "\n"
+     << "Attached: " << (snap.attached ? "yes" : "no") << "\n"
+     << "Memory used: " << snap.memory_current << " bytes\n";
+  if (snap.has_limit)
+    os << "Memory limit: " << snap.memory_max << " bytes\n";
+  else
+    os << "Memory limit: unlimited\n";
+  os << "Memory pressure: ";
+  if (snap.has_limit && snap.memory_max > 0)
+    os << std::fixed << std::setprecision(3) << snap.memory_pressure;
+  else
+    os << "unavailable";
+  os << "\nCPU time: ";
+  if (snap.has_cpu)
+    os << snap.cpu_usage_usec << " usec";
+  else
+    os << "unavailable";
+  os << "\nCPU limit: ";
+  if (snap.has_cpu_limit && snap.cpu_period_us > 0)
+    os << std::fixed << std::setprecision(1)
+       << (100.0 * static_cast<double>(snap.cpu_quota_us) /
+           static_cast<double>(snap.cpu_period_us))
+       << "%";
+  else
+    os << "unlimited";
+  os << "\nPSI some avg10: ";
+  if (snap.has_pressure)
+    os << std::fixed << std::setprecision(2) << snap.pressure_some_avg10 << "%";
+  else
+    os << "unavailable";
+  os << "\nOOM events: ";
+  if (snap.has_events)
+    os << snap.oom_events;
+  else
+    os << "unavailable";
+  os << "\nOOM kills: ";
+  if (snap.has_events)
+    os << snap.oom_kill_events;
+  else
+    os << "unavailable";
+  os << "\n";
+
+  *out = os.str();
   return Status::Ok();
 }
 

@@ -239,6 +239,7 @@ Status BufferPool::Fetch(Page::PageId id, Handle* out) {
 
   const std::size_t resident = FindFrame(id);
   if (resident != kNoFrame) {
+    cache_hits_++;
     frames_[resident].pin_count++;
     frames_[resident].last_used = NextTimestamp();  // a hit counts as an access
     *out = Handle(this, resident);
@@ -259,6 +260,7 @@ Status BufferPool::Fetch(Page::PageId id, Handle* out) {
     return s;
   }
 
+  cache_misses_++;
   Frame& frame = frames_[slot];
   frame.page = page;
   frame.pin_count = 1;

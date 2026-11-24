@@ -236,8 +236,9 @@ metadata is persisted alongside it under `<root>/.nexus/`.
 
 ```bash
 build/nexusdb help
-build/nexusdb create <name> [--memory <size>] [--cpu <percent>] [--engine <path> | --no-engine]
+build/nexusdb create <name> [--memory <size>] [--cpu <percent>] [--engine <path> | --no-engine] [--isolate]
 build/nexusdb start|stop|status|delete <name>
+build/nexusdb resources <name>
 build/nexusdb list
 build/nexusdb exec <name> [<command> [args...]]
 build/nexusdb db init <name>
@@ -258,6 +259,11 @@ build/nexusdb scan <name> <table>
 - `create` launches `db_engine` by default (resolved from `--engine`, then
   `$NEXUSDB_DB_ENGINE`, then a sibling `db_engine`). `--no-engine` keeps the
   placeholder workload.
+- `--isolate` requests PID/mount/net/UTS/IPC namespaces for the workload and
+  persists the request across CLI invocations. It needs `CAP_SYS_ADMIN` in the
+  current user namespace; without it `start` fails instead of running the
+  workload unisolated. The mount namespace does not set a new root — use
+  `nexus shell <name>` for filesystem isolation via `bwrap`.
 - On Linux/WSL2, `start` automatically re-execs under a transient
   `systemd-run --user --scope` when the current shell is outside the delegated
   user cgroup, so `nexusdb start` needs no prefix. The workload ignores
@@ -266,11 +272,17 @@ build/nexusdb scan <name> <table>
   control socket, so they are safe while it holds the files open. On a stopped
   container they open the database directly (running WAL recovery on open).
   Persisted data survives `stop`, CLI exit, and process restart.
+- `resources <name>` prints a live cgroup snapshot (attachment, memory
+  use/limit/pressure, cumulative CPU time, CPU limit, PSI, OOM counters).
+  `exec <name> stats` remains the engine's page/pool statistics, not cgroup usage.
 - `exec <name>` with no command is an interactive control-request loop;
-  `exec <name> ping|stats` issues a single request.
+  `exec <name> ping` issues a single request, and `exec <name> stats` reports
+  pages, pool occupancy, real buffer-pool cache hit/miss counters, and the
+  duration of the last successful query command (`n/a` before the first query).
 - Record payloads are hexadecimal (even length), e.g. `insert db1 t1 deadbeef`.
-- Exit codes: `0` ok, `1` operational error, `2` usage, `3` invalid argument,
-  `4` not found.
+- Exit codes: `0` ok, `1` unmapped operational error, `2` usage, `3` invalid
+  argument, `4` not found, `5` I/O error, `6` bad state, `7` buffer full,
+  `8` out of memory.
 - Unsupported (and not claimed): SQL, transactions, networking, distributed
   queries. The CLI is not a SQL shell.
 
@@ -294,6 +306,7 @@ nexus shell testdb   testdb:/container>>                  (isolated shell; `/con
 nexus stop testdb    digvijay@MSI:/mnt/d/NexusDB$           (clears an active context)
 nexus leave / exit   digvijay@MSI:/mnt/d/NexusDB$
 nexus context        Active container: testdb  (or: No container context is selected.)
+nexus context --verify  same, but clears a context whose container was deleted elsewhere
 ```
 
 Auto-isolation is the default: `nexus start <name>` and `nexus enter <name>`
@@ -358,7 +371,8 @@ What it does and does not do:
   behavior.
 - `nexus start <name>` starts through the real CLI and, on success, drops
   straight into the isolated shell. `nexus start <name> --no-shell` keeps it
-  context-only. `nexus stop/delete <name>` clears the context if active.
+  context-only. `nexus stop/delete <name>` clears the context if active;
+  `nexus context --verify` clears a stale context left by an external delete.
 - `nexus shell <name>` launches a real isolated shell via `bwrap`: the container
   data directory is the only writable path, mounted at `/container` (also `HOME`),
   with private mount/PID/net/IPC/UTS namespaces. `ls` there shows container data,

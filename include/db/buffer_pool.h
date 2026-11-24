@@ -213,6 +213,13 @@ class BufferPool {
   // Number of pins currently held on resident page `id` (0 if not resident).
   std::size_t PinCount(Page::PageId id) const;
 
+  unsigned long cache_hits() const { return cache_hits_; }
+  unsigned long cache_misses() const { return cache_misses_; }
+  void ResetCacheStats() {
+    cache_hits_ = 0;
+    cache_misses_ = 0;
+  }
+
   // Install (or clear with nullptr) the write-ahead-log barrier described above.
   // The pool does not own the sink, which must outlive the pool. Setting a sink
   // affects only dirty-page writes performed AFTER this call.
@@ -266,6 +273,8 @@ class BufferPool {
   // existing frames (and any Handle::page() reference) valid when it grows.
   std::deque<Frame> frames_;
   std::uint64_t access_clock_ = 0;
+  unsigned long cache_hits_ = 0;
+  unsigned long cache_misses_ = 0;
   PageLogSink* log_sink_ = nullptr;  // optional write-ahead-log barrier
 };
 

@@ -7,7 +7,7 @@
 # the DB engine.
 #
 # Usage:
-#   ./benchmarks/run_benchmarks.sh
+#   BUILD_DIR=build-wsl ./benchmarks/run_benchmarks.sh
 #
 # Outputs (under benchmarks/results/):
 #   env.<utc>.txt                       machine/environment capture
@@ -17,7 +17,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="$ROOT/build/nexus_benchmark"
+BUILD_DIR="${BUILD_DIR:-build}"
+BIN="$ROOT/$BUILD_DIR/nexus_benchmark"
 RESULTS="$ROOT/benchmarks/results"
 WORKLOADS="$ROOT/benchmarks/workloads"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -36,8 +37,9 @@ if ! mount | grep -q "type cgroup2"; then
 fi
 
 if [ ! -x "$BIN" ]; then
-    echo "[*] Building the benchmark (make benchmark)..."
-    make -C "$ROOT" benchmark
+    echo "[*] Building the benchmark (cmake --build $BUILD_DIR --target nexus_benchmark)..."
+    cmake -S "$ROOT" -B "$ROOT/$BUILD_DIR"
+    cmake --build "$ROOT/$BUILD_DIR" --target nexus_benchmark --parallel
 fi
 
 ENVFILE="$RESULTS/env.$STAMP.txt"

@@ -76,7 +76,8 @@ class Manager {
   // runtime launches on start ("" for the built-in placeholder). Fails if a
   // container named `name` is already registered.
   Status ContainerCreate(const std::string& name, unsigned long memory_bytes,
-                         unsigned int cpu_percent, const std::string& engine);
+                         unsigned int cpu_percent, const std::string& engine,
+                         bool isolate_namespaces = false);
 
   Status ContainerStart(const std::string& name);
   // After a successful start of an engine-backed container, start waits until
@@ -86,6 +87,7 @@ class Manager {
   Status ContainerStop(const std::string& name);
   Status ContainerDelete(const std::string& name);
   Status ContainerStatus(const std::string& name, std::string* out);
+  Status ContainerResources(const std::string& name, std::string* out);
 
   // Lightweight summary of one persisted container, for `nexusdb list`.
   struct ContainerInfo {

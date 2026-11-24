@@ -18,15 +18,15 @@ container memory limit (cgroups v2)
 | Memory pressure | Bridge snapshot (`memory.current` / `memory.max`) | Never fabricated |
 | Memory used / limit | Bridge snapshot | `memory.max == "max"` reported as unlimited |
 | CPU usage | `nexus_bridge_cpu_percent` over two `cpu.stat` samples | Requires two CPU-capable samples |
-| Cache hit/miss ratio | Harness probes `BufferPool::Contains()` **before** each `Fetch` | Harness-observed residency, not an engine counter |
+| Cache hit/miss ratio | Harness probes `BufferPool::Contains()` **before** each `Fetch` | Harness-observed residency; engine counters are available separately via `exec <name> stats` |
 | Operation latency | Wall-clock around each workload step (`Fetch` path) | Per-step `min`/`max`/`avg`/`total` milliseconds |
 
 ## What is NOT measured (and is never fabricated)
 
 | Metric | Why unavailable |
 |---|---|
-| Engine-reported cache counters | `BufferPool` exposes no hit/miss counters (the harness observes residency via `Contains()` instead) |
-| Query latency | There is no query processor on this branch |
+| Engine-reported cache counters in benchmark results | The benchmark does not sample engine stats; it observes residency via `Contains()` instead (`exec <name> stats` now exposes `cache_hits`/`cache_misses`) |
+| Query latency in benchmark results | The benchmark reports per-step `Fetch` time, not engine query latency (`exec <name> stats` now exposes `query_latency_ms`) |
 | Real pool memory under kernel enforcement | The benchmark links the engine in-process (`engine_workload.cpp`) and joins its own process to the container cgroup, so accounting covers the running workload. The separate `db_engine` executable is now wired into the container lifecycle, but the benchmark measures the in-process pool |
 
 Every result file prints these explicitly under `unavailable_metrics`.
@@ -74,7 +74,7 @@ mingw32-make all      :: -> build/nexus_benchmark_stub (refuses to run)
 ## Run
 
 ```bash
-./benchmarks/run_benchmarks.sh
+BUILD_DIR=build-wsl ./benchmarks/run_benchmarks.sh
 ```
 
 The runner executes the three required scenarios (sequential order):

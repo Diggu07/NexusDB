@@ -306,6 +306,7 @@ add_executable(nexusdb_cli
   src/manager/manager.cpp
   src/manager/router.cpp
   src/cli/nexusdb_cli.cpp
+  src/bridge/resource_monitor.c
   src/container/container.c
   src/container/cgroup.c
   src/container/namespace.c
@@ -329,6 +330,7 @@ add_executable(manager_test
   src/db/database/database.cpp
   src/manager/manager.cpp
   src/manager/router.cpp
+  src/bridge/resource_monitor.c
   src/container/container.c
   src/container/cgroup.c
   src/container/namespace.c
@@ -520,7 +522,7 @@ if(UNIX)
 endif()
 
 set_tests_properties(container_lifecycle namespace_isolation db_engine_binary cli
-  PROPERTIES SKIP_REGULAR_EXPRESSION "ALL TESTS PASSED.*env-limited")
+  PROPERTIES SKIP_REGULAR_EXPRESSION "ALL TESTS PASSED.*[^0-9][1-9][0-9]* env-limited")
 
 set_tests_properties(container_engine_demo cpu_enforcement memory_enforcement
   PROPERTIES SKIP_REGULAR_EXPRESSION "=== ENV-LIMITED")

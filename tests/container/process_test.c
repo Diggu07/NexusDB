@@ -111,6 +111,30 @@ int main(void)
         }
     }
 
+    /* 2b. Kernel identity is readable and rejects stale/reused pids. */
+    {
+        unsigned long long ticks = 0;
+        char comm[64];
+        long idle = process_spawn_placeholder();
+        CHECK("identity: placeholder spawned", idle > 0);
+        if (idle > 0) {
+            CHECK("identity: start ticks and comm captured",
+                  process_identity(idle, &ticks, comm, sizeof(comm)) == 0 &&
+                      ticks != 0 && comm[0] != '\0');
+            CHECK("identity: live pid matches recorded identity",
+                  process_identity_matches(idle, ticks, comm) != 0);
+            CHECK("identity: wrong start ticks are rejected",
+                  process_identity_matches(idle, ticks + 1, comm) == 0);
+            CHECK("identity: wrong comm is rejected",
+                  process_identity_matches(idle, ticks, "not-the-workload") == 0);
+            CHECK("identity: unknown ticks are rejected",
+                  process_identity_matches(idle, 0, comm) == 0);
+            CHECK("identity: dead pid cannot be inspected",
+                  process_stop(idle) == 0 &&
+                      process_identity(idle, NULL, NULL, 0) != 0);
+        }
+    }
+
     /* 3. Non-zero exit code is preserved (not silently discarded). */
     {
         static const char *const no[] = { "false", NULL };

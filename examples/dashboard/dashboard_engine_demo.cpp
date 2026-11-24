@@ -71,7 +71,9 @@ int EngineMetricsProvider(void* ctx, nexus_engine_metrics_t* out) {
   out->pool_actual_frames = static_cast<unsigned long>(e->pool->capacity());
   out->pool_resident_frames = static_cast<unsigned long>(e->pool->size());
   out->pool_pinned_frames = static_cast<unsigned long>(e->pool->pinned_frames());
-  // has_cache_stats / has_latency stay 0: the engine exposes neither.
+  out->has_cache_stats = 1;
+  out->cache_hits = e->pool->cache_hits();
+  out->cache_misses = e->pool->cache_misses();
   return NEXUS_OK;
 }
 

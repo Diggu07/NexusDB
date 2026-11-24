@@ -187,14 +187,15 @@ int container_create_ex(const char *name,
     return NEXUS_OK;
 }
 
-int container_adopt(const char *name,
-                    const char *id,
-                    unsigned long memory_bytes,
-                    unsigned int cpu_percent,
-                    const char *db_engine,
-                    const char *cgroup_path,
-                    long pid,
-                    int state)
+int container_adopt_ex(const char *name,
+                       const char *id,
+                       unsigned long memory_bytes,
+                       unsigned int cpu_percent,
+                       const char *db_engine,
+                       const char *cgroup_path,
+                       long pid,
+                       int state,
+                       const nexus_namespace_config_t *namespaces)
 {
     slot_t *dup, *s;
 
@@ -209,6 +210,9 @@ int container_adopt(const char *name,
     if (db_engine != NULL && strlen(db_engine) >= NEXUS_PATH_MAX)
         return NEXUS_ERR_INVALID;
     if (cgroup_path != NULL && strlen(cgroup_path) >= NEXUS_PATH_MAX)
+        return NEXUS_ERR_INVALID;
+    if (namespaces != NULL && namespaces->hostname != NULL &&
+        strlen(namespaces->hostname) >= NEXUS_NAME_MAX)
         return NEXUS_ERR_INVALID;
 
     dup = find_slot(name);
@@ -230,7 +234,67 @@ int container_adopt(const char *name,
         snprintf(s->c.cgroup_path, sizeof(s->c.cgroup_path), "%s", cgroup_path);
     if (db_engine != NULL)
         snprintf(s->c.db_engine, sizeof(s->c.db_engine), "%s", db_engine);
+    if (namespaces != NULL) {
+        s->c.ns_pid = namespaces->isolate_pid ? 1 : 0;
+        s->c.ns_mount = namespaces->isolate_mount ? 1 : 0;
+        s->c.ns_net = namespaces->isolate_net ? 1 : 0;
+        s->c.ns_uts = namespaces->isolate_uts ? 1 : 0;
+        s->c.ns_ipc = namespaces->isolate_ipc ? 1 : 0;
+        if (namespaces->hostname != NULL)
+            snprintf(s->c.ns_hostname, sizeof(s->c.ns_hostname), "%s",
+                     namespaces->hostname);
+    }
     s->c.created_at = (long)time(NULL);
+    return NEXUS_OK;
+}
+
+int container_adopt(const char *name,
+                    const char *id,
+                    unsigned long memory_bytes,
+                    unsigned int cpu_percent,
+                    const char *db_engine,
+                    const char *cgroup_path,
+                    long pid,
+                    int state)
+{
+    return container_adopt_ex(name, id, memory_bytes, cpu_percent, db_engine,
+                              cgroup_path, pid, state, NULL);
+}
+
+int container_set_process_identity(const char *name,
+                                   unsigned long long start_ticks,
+                                   const char *comm)
+{
+    slot_t *s;
+
+    if (!name_valid(name))
+        return NEXUS_ERR_INVALID;
+    s = find_slot(name);
+    if (s == NULL)
+        return NEXUS_ERR_NOT_FOUND;
+    s->c.pid_start_ticks = start_ticks;
+    s->c.pid_comm[0] = '\0';
+    if (comm != NULL)
+        snprintf(s->c.pid_comm, sizeof(s->c.pid_comm), "%s", comm);
+    return NEXUS_OK;
+}
+
+int container_get_process_identity(const char *name,
+                                   unsigned long long *start_ticks,
+                                   char *comm,
+                                   size_t comm_len)
+{
+    slot_t *s;
+
+    if (!name_valid(name))
+        return NEXUS_ERR_INVALID;
+    s = find_slot(name);
+    if (s == NULL)
+        return NEXUS_ERR_NOT_FOUND;
+    if (start_ticks != NULL)
+        *start_ticks = s->c.pid_start_ticks;
+    if (comm != NULL && comm_len > 0)
+        snprintf(comm, comm_len, "%s", s->c.pid_comm);
     return NEXUS_OK;
 }
 
@@ -433,9 +497,49 @@ int container_start(const char *name)
         return NEXUS_ERR_PROCESS;
     }
 
+#ifndef _WIN32
+    {
+        unsigned long long ticks = 0;
+        char comm[64];
+        if (process_identity(pid, &ticks, comm, sizeof(comm)) != 0) {
+            if (container_ns_requested(&s->c))
+                (void)process_stop_force(pid);
+            else
+                (void)process_stop(pid);
+            s->c.pid = -1;
+            return NEXUS_ERR_PROCESS;
+        }
+        s->c.pid_start_ticks = ticks;
+        snprintf(s->c.pid_comm, sizeof(s->c.pid_comm), "%s", comm);
+    }
+#endif
     s->c.pid = pid;
     s->c.state = NEXUS_RUNNING;
     return NEXUS_OK;
+}
+
+/* Verify before signalling. Records created before identity tracking have no
+ * ticks yet; adopt the current process once so subsequent operations are
+ * verified. A live pid that no longer matches is never signalled. */
+static int process_identity_verified(slot_t *s)
+{
+#ifdef _WIN32
+    (void)s;
+    return 1; /* /proc start-time identity is POSIX-only */
+#else
+    if (s->c.pid <= 0)
+        return 1;
+    if (s->c.pid_start_ticks == 0) {
+        unsigned long long ticks = 0;
+        char comm[64];
+        if (process_identity(s->c.pid, &ticks, comm, sizeof(comm)) != 0)
+            return 0;
+        s->c.pid_start_ticks = ticks;
+        snprintf(s->c.pid_comm, sizeof(s->c.pid_comm), "%s", comm);
+    }
+    return process_identity_matches(s->c.pid, s->c.pid_start_ticks,
+                                    s->c.pid_comm);
+#endif
 }
 
 int container_stop(const char *name)
@@ -451,8 +555,14 @@ int container_stop(const char *name)
         return NEXUS_ERR_STATE;
 
     if (s->c.pid != -1) {
-        if (process_stop(s->c.pid) != 0)
+        if (!process_identity_verified(s))
+            return NEXUS_ERR_STATE;
+        if (container_ns_requested(&s->c)) {
+            if (process_stop_force(s->c.pid) != 0)
+                return NEXUS_ERR_PROCESS;
+        } else if (process_stop(s->c.pid) != 0) {
             return NEXUS_ERR_PROCESS;
+        }
         s->c.pid = -1;
     }
     s->c.state = NEXUS_STOPPED;
@@ -476,8 +586,14 @@ int container_delete(const char *name)
     /* Defensive: never leave a live child behind even if bookkeeping
      * drifted (e.g. pid recorded but state was CREATED). */
     if (s->c.pid != -1) {
-        if (process_is_alive(s->c.pid))
-            (void)process_stop(s->c.pid);
+        if (process_is_alive(s->c.pid)) {
+            if (!process_identity_verified(s))
+                return NEXUS_ERR_STATE;
+            if (container_ns_requested(&s->c))
+                (void)process_stop_force(s->c.pid);
+            else
+                (void)process_stop(s->c.pid);
+        }
         s->c.pid = -1;
     }
     /* A failed destroy keeps the current state so the caller can retry;

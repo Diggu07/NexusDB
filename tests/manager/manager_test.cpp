@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -137,9 +138,36 @@ std::string MakeBytes(std::initializer_list<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.begin()), bytes.size());
 }
 
+void WriteCgroupFiles(const std::string& cgroup_root,
+                      const std::string& name) {
+  const std::string dir = cgroup_root + "/" + name;
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  {
+    std::ofstream out(dir + "/memory.max", std::ios::trunc);
+    out << "1048576\n";
+  }
+  {
+    std::ofstream out(dir + "/memory.current", std::ios::trunc);
+    out << "4096\n";
+  }
+  {
+    std::ofstream out(dir + "/cpu.max", std::ios::trunc);
+    out << "50000 100000\n";
+  }
+  {
+    std::ofstream out(dir + "/cpu.stat", std::ios::trunc);
+    out << "usage_usec 12345\n";
+  }
+  {
+    std::ofstream out(dir + "/cgroup.procs", std::ios::trunc);
+  }
+}
+
 void WriteRunningMeta(const std::string& root, const std::string& name,
-                      int state) {
+                       int state) {
   const std::string dir = root + "/.nexus/containers";
+
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   std::ofstream out(dir + "/" + name + ".meta", std::ios::trunc);
@@ -373,6 +401,18 @@ int main() {
   CHECK("status reports CREATED", Contains(status, "CREATED"));
   CHECK("meta file persisted",
         std::filesystem::exists(root + "/.nexus/containers/c1.meta"));
+  WriteCgroupFiles(cg, "c1");
+  std::string resources;
+  CHECK("container resources", mgr.ContainerResources("c1", &resources).ok());
+  CHECK("resources reports memory use",
+        Contains(resources, "Memory used: 4096 bytes"));
+  CHECK("resources reports memory limit",
+        Contains(resources, "Memory limit: 1048576 bytes"));
+  CHECK("resources reports cpu time",
+        Contains(resources, "CPU time: 12345 usec"));
+  CHECK("resources reports cpu limit", Contains(resources, "CPU limit: 50.0%"));
+  CHECK("resources reports detached cgroup",
+        Contains(resources, "Attached: no"));
   {
     Manager rehydrated(root);
     std::string st;
@@ -386,6 +426,80 @@ int main() {
         mgr.ContainerStatus("c1", &status).code == DbError::kNotFound);
   CHECK("delete unknown container -> not found",
         mgr.ContainerDelete("ghost").code == DbError::kNotFound);
+
+  CHECK("container create with namespace isolation",
+        mgr.ContainerCreate("ciso", 0, 0, "", true).ok());
+  {
+    std::ifstream in(root + "/.nexus/containers/ciso.meta");
+    std::string line;
+    std::string text;
+    while (std::getline(in, line))
+      text += line + "\n";
+    CHECK("metadata records namespace request",
+          Contains(text, "ns_pid=1") && Contains(text, "ns_mount=1") &&
+              Contains(text, "ns_net=1") && Contains(text, "ns_uts=1") &&
+              Contains(text, "ns_ipc=1"));
+    Manager rehydrated(root);
+    std::string st;
+    CHECK("rehydrate isolated container",
+          rehydrated.ContainerStatus("ciso", &st).ok());
+  }
+  CHECK("delete isolated container", mgr.ContainerDelete("ciso").ok());
+
+#ifndef _WIN32
+  // ---- process identity verification ----
+  CHECK("container create for identity check",
+        mgr.ContainerCreate("cid", 0, 0, "", false).ok());
+  CHECK("container start for identity check", mgr.ContainerStart("cid").ok());
+  {
+    const std::string path = root + "/.nexus/containers/cid.meta";
+    std::ifstream in(path);
+    std::string text((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    in.close();
+    const std::size_t pos = text.find("pid_start_ticks=");
+    CHECK("identity metadata persisted", pos != std::string::npos);
+    std::string corrupted = text;
+    if (pos != std::string::npos) {
+      const std::size_t end = corrupted.find('\n', pos);
+      corrupted.replace(pos, end - pos, "pid_start_ticks=1");
+    }
+    {
+      std::ofstream out(path, std::ios::trunc);
+      out << corrupted;
+    }
+    Manager stale(root);
+    CHECK("stale process identity refuses stop",
+          stale.ContainerStop("cid").code == DbError::kBadState);
+    {
+      std::ofstream out(path, std::ios::trunc);
+      out << text;
+    }
+    Manager restored(root);
+    CHECK("restored process identity permits stop",
+          restored.ContainerStop("cid").ok());
+    CHECK("identity container delete",
+          restored.ContainerDelete("cid").ok());
+  }
+#endif
+
+  // ---- Router exit-code mapping ----
+  CHECK("exit code ok", nexusdb::cli::ExitCodeFor(DbError::kOk) ==
+                            nexusdb::cli::kOk);
+  CHECK("exit code invalid", nexusdb::cli::ExitCodeFor(DbError::kInvalidArgument) ==
+                                 nexusdb::cli::kInvalid);
+  CHECK("exit code not found", nexusdb::cli::ExitCodeFor(DbError::kNotFound) ==
+                                   nexusdb::cli::kNotFound);
+  CHECK("exit code io error", nexusdb::cli::ExitCodeFor(DbError::kIoError) ==
+                                  nexusdb::cli::kIoError);
+  CHECK("exit code bad state", nexusdb::cli::ExitCodeFor(DbError::kBadState) ==
+                                   nexusdb::cli::kBadState);
+  CHECK("exit code buffer full",
+        nexusdb::cli::ExitCodeFor(DbError::kBufferFull) ==
+            nexusdb::cli::kBufferFull);
+  CHECK("exit code out of memory",
+        nexusdb::cli::ExitCodeFor(DbError::kOutOfMemory) ==
+            nexusdb::cli::kOutOfMemory);
 
   // ---- Router parsing ----
   Command cmd;
@@ -437,6 +551,9 @@ int main() {
   CHECK("parse create --no-engine",
         ParseArgs({"create", "c9", "--no-engine"}, &cmd, &err) == 0 &&
             cmd.engine.empty() && cmd.engine_explicit);
+  CHECK("parse create --isolate",
+        ParseArgs({"create", "c9", "--isolate"}, &cmd, &err) == 0 &&
+            cmd.isolate_namespaces);
   CHECK("parse create bad unit -> invalid",
         ParseArgs({"create", "c9", "--memory", "16Q"}, &cmd, &err) == 3);
   CHECK("parse create fractional unit -> invalid",
@@ -446,6 +563,14 @@ int main() {
   CHECK("parse list",
         ParseArgs({"list"}, &cmd, &err) == 0 &&
             cmd.kind == CommandKind::kContainerList);
+  CHECK("parse resources short form",
+        ParseArgs({"resources", "c1"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kContainerResources && cmd.name == "c1");
+  CHECK("parse resources long form",
+        ParseArgs({"container", "resources", "c1"}, &cmd, &err) == 0 &&
+            cmd.kind == CommandKind::kContainerResources && cmd.name == "c1");
+  CHECK("parse resources wrong arity -> usage",
+        ParseArgs({"resources"}, &cmd, &err) == 2);
   CHECK("parse exec",
         ParseArgs({"exec", "c9", "ping"}, &cmd, &err) == 0 &&
             cmd.kind == CommandKind::kContainerExec && cmd.request == "ping");
@@ -529,6 +654,16 @@ int main() {
   r = Run(&mgr, {"table", "list", "db1"});
   CHECK("dispatch table list -> ok and lists t1",
         r.exit_code == nexusdb::cli::kOk && Contains(r.output, "t1"));
+  CHECK("resources dispatch fixture create",
+        mgr.ContainerCreate("res1", 0, 0, "").ok());
+  WriteCgroupFiles(cg, "res1");
+  r = Run(&mgr, {"resources", "res1"});
+  CHECK("dispatch resources -> ok and live memory",
+        r.exit_code == nexusdb::cli::kOk &&
+            Contains(r.output, "Memory used: 4096 bytes"));
+  r = Run(&mgr, {"resources", "ghost"});
+  CHECK("dispatch resources unknown -> not found",
+        r.exit_code == nexusdb::cli::kNotFound);
 
   RemoveAll(root);
   RemoveAll(cg);

@@ -98,6 +98,11 @@ typedef struct nexus_container {
     int ns_uts;
     int ns_ipc;
     char ns_hostname[NEXUS_NAME_MAX];  /* UTS hostname; "" = none */
+
+    /* Kernel identity of the live workload, captured at start and persisted
+     * by the Manager. 0/"" means the record predates identity tracking. */
+    unsigned long long pid_start_ticks;
+    char pid_comm[64];
 } nexus_container_t;
 
 /* Create a container record in CREATED state. db_engine may be NULL/"": when
@@ -147,6 +152,16 @@ int container_create_ex(const char *name,
  * idempotent) or claims a free slot. Returns NEXUS_OK, NEXUS_ERR_INVALID for a
  * bad name/state, or NEXUS_ERR_NOMEM when the registry is full.
  */
+int container_adopt_ex(const char *name,
+                       const char *id,
+                       unsigned long memory_bytes,
+                       unsigned int cpu_percent,
+                       const char *db_engine,
+                       const char *cgroup_path,
+                       long pid,
+                       int state,
+                       const nexus_namespace_config_t *namespaces);
+
 int container_adopt(const char *name,
                     const char *id,
                     unsigned long memory_bytes,
@@ -155,6 +170,17 @@ int container_adopt(const char *name,
                     const char *cgroup_path,
                     long pid,
                     int state);
+
+/* Set/read the recorded kernel identity for a rehydrated container. These are
+ * additive so older adopt callers remain valid. The stop path refuses to
+ * signal a pid whose recorded start ticks no longer match. */
+int container_set_process_identity(const char *name,
+                                   unsigned long long start_ticks,
+                                   const char *comm);
+int container_get_process_identity(const char *name,
+                                   unsigned long long *start_ticks,
+                                   char *comm,
+                                   size_t comm_len);
 
 /* Start the container: spawns the workload (the configured db_engine, else the
  * placeholder) GATED (blocked before exec) in the configured namespaces,
@@ -170,7 +196,8 @@ int container_adopt(const char *name,
 int container_start(const char *name);
 
 /* Stop a RUNNING container: SIGTERM, grace period, SIGKILL, reap
- * (no zombies), moves RUNNING -> STOPPED. */
+ * (no zombies), moves RUNNING -> STOPPED. Namespaced workloads are killed
+ * directly because PID 1 ignores default-action signals. */
 int container_stop(const char *name);
 
 /* Delete a container. Must be CREATED/STOPPED/DELETED; RUNNING must be

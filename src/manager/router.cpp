@@ -15,6 +15,27 @@
 
 namespace nexusdb {
 namespace cli {
+
+int ExitCodeFor(DbError code) {
+  switch (code) {
+    case DbError::kOk:
+      return kOk;
+    case DbError::kInvalidArgument:
+      return kInvalid;
+    case DbError::kNotFound:
+      return kNotFound;
+    case DbError::kIoError:
+      return kIoError;
+    case DbError::kBadState:
+      return kBadState;
+    case DbError::kBufferFull:
+      return kBufferFull;
+    case DbError::kOutOfMemory:
+      return kOutOfMemory;
+  }
+  return kError;
+}
+
 namespace {
 
 int HexVal(char c) {
@@ -148,19 +169,7 @@ int Invalid(std::string* error, const std::string& message) {
 }
 
 int MapStatus(const Status& s, Result* result) {
-  switch (s.code) {
-    case DbError::kOk:
-      break;
-    case DbError::kInvalidArgument:
-      result->exit_code = kInvalid;
-      break;
-    case DbError::kNotFound:
-      result->exit_code = kNotFound;
-      break;
-    default:
-      result->exit_code = kError;
-      break;
-  }
+  result->exit_code = ExitCodeFor(s.code);
   result->output = s.message;
   return result->exit_code;
 }
@@ -192,6 +201,10 @@ int ParseCreateOptions(const std::vector<std::string>& args, std::size_t start,
     if (flag == "--no-engine") {
       out->engine.clear();
       out->engine_explicit = true;
+      continue;
+    }
+    if (flag == "--isolate" || flag == "--namespace") {
+      out->isolate_namespaces = true;
       continue;
     }
     if (flag != "--memory" && flag != "--cpu" && flag != "--cpu-percent" &&
@@ -371,6 +384,7 @@ const char* HelpText() {
       "  nexusdb create <name> [--memory <size>] [--cpu <percent>]"
       " [--engine <path> | --no-engine]\n"
       "  nexusdb start|stop|status|delete <name>\n"
+      "  nexusdb resources <name>\n"
       "  nexusdb list\n"
       "  nexusdb exec <name> [<command> [args...]]\n"
       "  nexusdb db init <name>\n"
@@ -395,28 +409,37 @@ const char* HelpText() {
       "directly. `exec <name>` with no command is an interactive request loop.\n"
       "\n"
       "Exit codes: 0 ok, 1 operational error, 2 usage, 3 invalid argument,"
-      " 4 not found.\n";
+      " 4 not found, 5 I/O error, 6 bad state, 7 buffer full, 8 out of memory.\n";
 }
 
 const char* HelpTopic(const std::string& name) {
   if (name == "create") {
     return
         "usage: nexusdb create <name> [--memory <size>] [--cpu <percent>]"
-        " [--engine <path> | --no-engine]\n"
+        " [--engine <path> | --no-engine] [--isolate]\n"
         "\n"
         "  --memory <size>   limit in bytes or with B/K/KB/M/MB/G/GB suffix;"
         " 0 = unlimited\n"
         "  --cpu <percent>   CPU quota percentage, 0..100; 0 = unlimited\n"
         "  --engine <path>   engine executable (default: $NEXUSDB_DB_ENGINE,"
         " else ./db_engine)\n"
-        "  --no-engine       do not launch an engine (placeholder workload)\n";
+        "  --no-engine       do not launch an engine (placeholder workload)\n"
+        "  --isolate         run workload in PID/mount/net/UTS/IPC namespaces\n";
   }
   if (name == "status") {
     return
         "usage: nexusdb status <name>\n"
         "\n"
-        "Prints the container state, id, PID, cgroup path, limits and live\n"
-        "resource usage. Works across CLI invocations (metadata is persisted).\n";
+        "Prints the container state, id, PID, cgroup path and configured limits.\n"
+        "Use `nexusdb resources <name>` for live cgroup usage.\n";
+  }
+  if (name == "resources") {
+    return
+        "usage: nexusdb resources <name>\n"
+        "\n"
+        "Prints a live cgroup snapshot: attachment, memory use/limit/pressure,\n"
+        "cumulative CPU time, CPU limit, PSI, and OOM counters. Unavailable\n"
+        "values are labelled honestly instead of being reported as zero.\n";
   }
   if (name == "list") {
     return
@@ -481,6 +504,13 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
                                    : CommandKind::kContainerStatus;
     return kOk;
   }
+  if (cmd == "resources") {
+    if (args.size() != 2)
+      return Usage(error, "usage: nexusdb resources <name>");
+    out->kind = CommandKind::kContainerResources;
+    out->name = args[1];
+    return kOk;
+  }
   // `delete <name>` deletes a container; `delete <name> <table> <page> <slot>`
   // deletes a record (handled below). Disambiguate on the argument count.
   if (cmd == "delete" && args.size() == 2) {
@@ -512,13 +542,13 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
     if (args.size() < 2)
       return Usage(error,
                    "usage: nexusdb container "
-                   "<create|start|stop|status|delete|list> <name>");
+                    "<create|start|stop|status|delete|list|resources> <name>");
     const std::string& sub = args[1];
     if (sub == "create") {
       if (args.size() < 3)
         return Usage(error,
-                     "usage: nexusdb container create <name> [--memory <size>] "
-                     "[--cpu <percent>] [--engine <path> | --no-engine]");
+                      "usage: nexusdb container create <name> [--memory <size>] "
+                      "[--cpu <percent>] [--engine <path> | --no-engine] [--isolate]");
       out->kind = CommandKind::kContainerCreate;
       out->name = args[2];
       return ParseCreateOptions(args, 3, out, error);
@@ -529,14 +559,16 @@ int ParseArgs(const std::vector<std::string>& args, Command* out,
       out->kind = CommandKind::kContainerList;
       return kOk;
     }
-    if (sub == "start" || sub == "stop" || sub == "status" || sub == "delete") {
+    if (sub == "start" || sub == "stop" || sub == "status" || sub == "delete" ||
+        sub == "resources") {
       if (args.size() != 3)
         return Usage(error, "usage: nexusdb container " + sub + " <name>");
       out->name = args[2];
-      out->kind = (sub == "start")   ? CommandKind::kContainerStart
-                  : (sub == "stop")  ? CommandKind::kContainerStop
-                  : (sub == "status") ? CommandKind::kContainerStatus
-                                      : CommandKind::kContainerDelete;
+      out->kind = (sub == "start")      ? CommandKind::kContainerStart
+                  : (sub == "stop")     ? CommandKind::kContainerStop
+                  : (sub == "status")   ? CommandKind::kContainerStatus
+                  : (sub == "resources") ? CommandKind::kContainerResources
+                                         : CommandKind::kContainerDelete;
       return kOk;
     }
     return Usage(error, "unknown container subcommand: " + sub);
@@ -692,8 +724,8 @@ Result Dispatch(Manager* mgr, const Command& cmd) {
       std::string engine = cmd.engine;
       if (!cmd.engine_explicit)
         engine = ResolveDefaultEngine(cmd.program_path);
-      const Status s =
-          mgr->ContainerCreate(cmd.name, cmd.memory, cmd.cpu, engine);
+      const Status s = mgr->ContainerCreate(
+          cmd.name, cmd.memory, cmd.cpu, engine, cmd.isolate_namespaces);
       if (!s.ok())
         return (MapStatus(s, &result), result);
       result.output = "created container " + cmd.name;
@@ -723,6 +755,14 @@ Result Dispatch(Manager* mgr, const Command& cmd) {
     case CommandKind::kContainerStatus: {
       std::string text;
       const Status s = mgr->ContainerStatus(cmd.name, &text);
+      if (!s.ok())
+        return (MapStatus(s, &result), result);
+      result.output = std::move(text);
+      return result;
+    }
+    case CommandKind::kContainerResources: {
+      std::string text;
+      const Status s = mgr->ContainerResources(cmd.name, &text);
       if (!s.ok())
         return (MapStatus(s, &result), result);
       result.output = std::move(text);

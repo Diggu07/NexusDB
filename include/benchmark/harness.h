@@ -150,9 +150,9 @@ typedef struct nexus_bench_result {
     nexus_bench_pool_stats_t pool;
     nexus_bench_resource_stats_t resource;
 
-    /* honesty: capabilities the engine does NOT expose on this branch */
-    int engine_reports_cache_counters;  /* always 0 */
-    int engine_reports_query_latency;   /* always 0 */
+    /* honesty: engine stats captured by this harness (not by Contains/Fetch) */
+    int engine_reports_cache_counters;
+    int engine_reports_query_latency;
 } nexus_bench_result_t;
 
 /* Fill `cfg` with documented defaults (512 MiB, sequential, 4096 iterations,

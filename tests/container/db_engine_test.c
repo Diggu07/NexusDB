@@ -398,6 +398,18 @@ int main(void)
                           control_request(sockpath, "ping", reply,
                                           sizeof(reply)) == 0 &&
                               strncmp(reply, "OK pong", 7) == 0);
+                    CHECK("client table list -> OK",
+                          control_request(sockpath, "table list", reply,
+                                          sizeof(reply)) == 0 &&
+                              strncmp(reply, "OK", 2) == 0);
+                    CHECK("client stats -> cache and latency counters",
+                          control_request(sockpath, "stats", reply,
+                                          sizeof(reply)) == 0 &&
+                              strstr(reply, "OK\n") == reply &&
+                              strstr(reply, "cache_hits ") != NULL &&
+                              strstr(reply, "cache_misses ") != NULL &&
+                              strstr(reply, "query_latency_ms ") != NULL &&
+                              strstr(reply, "n/a") == NULL);
 
                     CHECK("send SIGTERM to db_engine",
                           kill(pid, SIGTERM) == 0);

@@ -135,7 +135,9 @@ int EngineMetricsProvider(void* ctx, nexus_engine_metrics_t* out) {
   out->pool_actual_frames = static_cast<unsigned long>(p->pool->capacity());
   out->pool_resident_frames = static_cast<unsigned long>(p->pool->size());
   out->pool_pinned_frames = static_cast<unsigned long>(p->pool->pinned_frames());
-  // Cache counters / latency genuinely do not exist on the engine.
+  out->has_cache_stats = 1;
+  out->cache_hits = p->pool->cache_hits();
+  out->cache_misses = p->pool->cache_misses();
   return NEXUS_OK;
 }
 
@@ -598,8 +600,11 @@ int main() {
               rc == NEXUS_OK && m.engine.has_pool == 1 &&
                   m.engine.pool_actual_frames == 4 &&
                   m.engine.pool_target_frames == 6);
-        CHECK("dashboard keeps cache stats honestly unavailable",
-              m.engine.has_cache_stats == 0 && m.engine.has_latency == 0);
+        CHECK("dashboard reports real cache stats",
+              m.engine.has_cache_stats == 1 &&
+                  m.engine.cache_hits == pctx.pool->cache_hits() &&
+                  m.engine.cache_misses == pctx.pool->cache_misses() &&
+                  m.engine.has_latency == 0);
 
         char text[2048];
         CHECK("dashboard renders",
@@ -607,9 +612,10 @@ int main() {
         const std::string rendered(text);
         CHECK("rendered text shows the real pool capacity",
               rendered.find("Buffer actual:    4 frames") != std::string::npos);
-        CHECK("rendered text labels cache as unavailable",
-              rendered.find("Cache hits:       unavailable") !=
-                  std::string::npos);
+        CHECK("rendered text shows the real cache counters",
+              rendered.find("Cache hits:") != std::string::npos &&
+                  rendered.find("Cache hits:       unavailable") ==
+                      std::string::npos);
       }
     }
   }

@@ -24,7 +24,7 @@
 #                        NEXUSDB_ENTER_AUTO_SHELL=0 to disable globally.
 #   nexus leave          clear the context (original PS1 is restored)
 #   nexus exit           alias for `nexus leave`
-#   nexus context        print the active container, if any
+#   nexus context [--verify] print the active container; clear it if stale
 #
 # The active context lives in $NEXUSDB_CONTEXT plus the __nexus_* locals; it
 # is per-interactive-shell and needs no background process. A standalone
@@ -128,6 +128,21 @@ __nexus_validate_container() {
 # Trailing spaces of the base are dropped while a suffix is shown, so the
 # rendered prompt ends in `...$:testdb>>` as promised. Suffixes can never
 # accumulate because the base is never mutated.
+__nexus_context_verify() {
+  local name=${NEXUSDB_CONTEXT:-} cli status
+  [[ -n $name ]] || return 0
+  cli=$(__nexus_cli) || return 0
+  __nexus_validate_container "$cli" "$name"
+  status=$?
+  if (( status != 0 )); then
+    unset NEXUSDB_CONTEXT
+    __nexus_refresh_prompt
+    printf 'nexus: cleared stale container context: %s\n' "$name" >&2
+    return 1
+  fi
+  return 0
+}
+
 __nexus_prompt_hook() {
   if [[ -z ${NEXUSDB_PROMPT_BASE:-} ]]; then
     return 0
@@ -234,11 +249,15 @@ __nexus_leave() {
 }
 
 __nexus_context() {
+  if [[ ${1:-} == --verify ]]; then
+    shift
+  fi
   if (( $# != 0 )); then
-    printf 'usage: nexus context\n' >&2
+    printf 'usage: nexus context [--verify]\n' >&2
     return 2
   fi
   if [[ -n ${NEXUSDB_CONTEXT:-} ]]; then
+    __nexus_context_verify || return $?
     printf 'Active container: %s\n' "$NEXUSDB_CONTEXT"
     return 0
   fi
@@ -379,7 +398,7 @@ __nexus_help() {
   Set NEXUSDB_ENTER_AUTO_SHELL=0 to disable auto-isolation globally.
   nexus stop <name>    stop the container; clears the context if it was active
   nexus leave / exit   clear the context and restore the original prompt
-  nexus context        print the active container, if any
+  nexus context [--verify] print the active container; clears stale contexts
 
 `nexus` is the recommended interface; every command above is forwarded to
 the compiled `nexusdb` CLI unchanged, and `nexusdb` itself keeps working
@@ -486,7 +505,8 @@ nexus_unintegrate() {
   fi
   unset NEXUSDB_PROMPT_BASE NEXUSDB_CONTEXT
   unset -f nexus nexus_unintegrate __nexus_prompt_hook __nexus_refresh_prompt \
-    __nexus_enter __nexus_leave __nexus_context __nexus_shell \
+    __nexus_enter __nexus_leave __nexus_context __nexus_context_verify \
+    __nexus_shell \
     __nexus_auto_shell_enabled __nexus_cgroup_scope_ok __nexus_ensure_cgroup_scope \
     __nexus_name_valid __nexus_validate_container __nexus_cli \
     __nexus_script_dir __nexus_cli_missing __nexus_help \

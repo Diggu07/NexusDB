@@ -29,9 +29,26 @@ long process_spawn_placeholder(void);
  * preserved for the caller to log). Idempotent-ish: an already-dead but
  * not-yet-reaped child is reaped and reported as success. */
 int process_stop(long pid);
+int process_stop_force(long pid);
 
 /* 1 if pid names a live (or zombie, Linux) child, 0 otherwise. */
 int process_is_alive(long pid);
+
+/* Capture the kernel's identity for `pid`: /proc/<pid>/stat starttime (clock
+ * ticks since boot) plus the 15-byte process name. Returns 0 on success, -1
+ * when the process is gone or the identity cannot be read. `start_ticks` may be
+ * NULL; `comm` may be NULL when `comm_len` is 0. On Windows this is a
+ * POSIX-only concept and returns -1. */
+int process_identity(long pid, unsigned long long *start_ticks,
+                     char *comm, size_t comm_len);
+
+/* 1 only when `pid` still has the recorded identity, 0 on mismatch or when
+ * the process cannot be inspected. A zero `expected_ticks` means "unknown"
+ * and is treated as a mismatch so callers never signal an unverified pid.
+ * On Windows (where start ticks are unavailable) this returns 1 for a live
+ * pid so the dev shim keeps working. */
+int process_identity_matches(long pid, unsigned long long expected_ticks,
+                             const char *expected_comm);
 
 /* ---- direct-execution API (P0: safe primitives, not yet wired into
  *      the container lifecycle) ---- */

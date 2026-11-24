@@ -99,6 +99,11 @@ int process_stop(long pid)
     return 0;
 }
 
+int process_stop_force(long pid)
+{
+    return process_stop(pid);
+}
+
 int process_is_alive(long pid)
 {
     HANDLE h;
@@ -115,6 +120,24 @@ int process_is_alive(long pid)
     }
     CloseHandle(h);
     return code == STILL_ACTIVE;
+}
+
+int process_identity(long pid, unsigned long long *start_ticks,
+                     char *comm, size_t comm_len)
+{
+    (void)pid;
+    (void)start_ticks;
+    (void)comm;
+    (void)comm_len;
+    return -1;
+}
+
+int process_identity_matches(long pid, unsigned long long expected_ticks,
+                             const char *expected_comm)
+{
+    (void)expected_ticks;
+    (void)expected_comm;
+    return process_is_alive(pid);
 }
 
 long process_spawn_exec(const process_exec_t *spec)
@@ -200,6 +223,8 @@ void process_gate_abort(process_gate_t *gate)
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -266,6 +291,31 @@ int process_stop(long pid)
     return -1;
 }
 
+int process_stop_force(long pid)
+{
+    pid_t c = (pid_t)pid;
+    int status;
+    pid_t w;
+    int tries;
+
+    if (pid <= 0)
+        return -1;
+    if (kill(c, SIGKILL) < 0 && errno != ESRCH)
+        return -1;
+    for (tries = 0; tries < 50; ++tries) {
+        w = waitpid(c, &status, WNOHANG);
+        if ((w == c || (w < 0 && errno == ECHILD)) && !process_is_alive(c))
+            return 0;
+        {
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = 100 * 1000 * 1000;
+            nanosleep(&ts, NULL);
+        }
+    }
+    return process_is_alive(c) ? -1 : 0;
+}
+
 int process_is_alive(long pid)
 {
     pid_t c = (pid_t)pid;
@@ -274,6 +324,92 @@ int process_is_alive(long pid)
     if (kill(c, 0) == 0)
         return 1; /* includes zombie children; stop() reaps them */
     return errno != ESRCH ? 1 : 0;
+}
+
+int process_identity(long pid, unsigned long long *start_ticks,
+                     char *comm, size_t comm_len)
+{
+    char path[64];
+    char buf[4096];
+    char *close_paren;
+    char *cursor;
+    char *end;
+    unsigned long long ticks;
+    unsigned int field;
+    FILE *fp;
+    size_t n;
+
+    if (pid <= 0)
+        return -1;
+    if (comm != NULL && comm_len > 0)
+        comm[0] = '\0';
+    if (snprintf(path, sizeof(path), "/proc/%ld/stat", pid) < 0)
+        return -1;
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+        return -1;
+    n = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    if (n == 0)
+        return -1;
+    buf[n] = '\0';
+
+    /* comm is parenthesized and may itself contain spaces or ')', so anchor
+     * on the LAST ')' on the line before parsing the numeric fields. */
+    close_paren = strrchr(buf, ')');
+    if (close_paren == NULL || close_paren[1] != ' ')
+        return -1;
+    if (comm != NULL && comm_len > 0) {
+        const char *open_paren = strchr(buf, '(');
+        size_t len;
+        if (open_paren == NULL || open_paren >= close_paren)
+            return -1;
+        ++open_paren;
+        len = (size_t)(close_paren - open_paren);
+        if (len >= comm_len)
+            len = comm_len - 1;
+        memcpy(comm, open_paren, len);
+        comm[len] = '\0';
+    }
+
+    cursor = close_paren + 2; /* field 3 (state) */
+    errno = 0;
+    for (field = 3; field < 22; ++field) {
+        while (*cursor == ' ')
+            ++cursor;
+        if (*cursor == '\0')
+            return -1;
+        cursor = strchr(cursor, ' ');
+        if (cursor == NULL)
+            return -1;
+    }
+    while (*cursor == ' ')
+        ++cursor;
+    ticks = strtoull(cursor, &end, 10);
+    if (end == cursor || errno == ERANGE)
+        return -1;
+    if (start_ticks != NULL)
+        *start_ticks = ticks;
+    return ticks != 0 ? 0 : -1;
+}
+
+int process_identity_matches(long pid, unsigned long long expected_ticks,
+                             const char *expected_comm)
+{
+    unsigned long long actual_ticks = 0;
+    char actual_comm[64];
+
+    if (pid <= 0 || expected_ticks == 0)
+        return 0;
+    if (process_identity(pid, &actual_ticks, actual_comm,
+                         sizeof(actual_comm)) != 0)
+        return 0;
+    if (actual_ticks != expected_ticks)
+        return 0;
+    if (expected_comm != NULL && expected_comm[0] != '\0' &&
+        strcmp(actual_comm, expected_comm) != 0)
+        return 0;
+    return 1;
 }
 
 long process_spawn_exec(const process_exec_t *spec)

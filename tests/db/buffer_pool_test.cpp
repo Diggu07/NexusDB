@@ -140,16 +140,22 @@ int main() {
 
     std::unique_ptr<BufferPool> pool;
     CHECK("create repeat pool", BufferPool::Create(storage.get(), 2, &pool).ok());
+    CHECK("cache counters start at zero",
+          pool->cache_hits() == 0 && pool->cache_misses() == 0);
 
     {
       BufferPool::Handle h1;
       CHECK("first fetch", pool->Fetch(0, &h1).ok());
+      CHECK("first fetch counts as a miss",
+            pool->cache_hits() == 0 && pool->cache_misses() == 1);
       h1.page().data()[0] = 0xAB;  // change only in memory
       h1.MarkDirty();
     }  // h1 unpinned here
 
     BufferPool::Handle h2;
     CHECK("second fetch", pool->Fetch(0, &h2).ok());
+    CHECK("second fetch counts as a hit",
+          pool->cache_hits() == 1 && pool->cache_misses() == 1);
     CHECK("cached copy returned (not re-read)",
           h2.page().data()[0] == 0xAB);
     CHECK("cached dirty state preserved", h2.IsDirty());
@@ -437,6 +443,7 @@ int main() {
     CHECK("read over closed storage fails", !r.ok());
     CHECK("closed-storage read is kBadState", r.code == DbError::kBadState);
     CHECK("failed read leaves handle empty", !missing.valid());
+    CHECK("failed read does not count as a miss", pool->cache_misses() == 1);
   }
 
   RemoveDb(path);

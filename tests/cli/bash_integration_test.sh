@@ -442,6 +442,20 @@ expect_rc "11e. nexusdb binary directly (rc=0)" 0 $?
 "$CLI" help >/dev/null 2>&1
 expect_rc "11e. nexusdb help directly (rc=0)" 0 $?
 
+# 11f. Context verification clears a context whose container was deleted
+# outside the wrapper (the documented stale-context gap).
+"$CLI" create stalectx >/dev/null 2>&1
+expect_rc "11f. fixture create stalectx" 0 $?
+nexus enter --context stalectx >/dev/null 2>&1
+expect_rc "11f. enter stale context" 0 $?
+expect_equal "11f. context selected" stalectx "${NEXUSDB_CONTEXT-}"
+"$CLI" delete stalectx >/dev/null 2>&1
+expect_rc "11f. fixture delete stalectx" 0 $?
+nexus context --verify >/dev/null 2>&1
+expect_rc "11f. context --verify reports stale context (rc=1)" 1 $?
+expect_equal "11f. stale context cleared" '' "${NEXUSDB_CONTEXT-}"
+expect_equal "11f. prompt restored" '\u@\h:\w\$ ' "$PS1"
+
 # Full unload back to a pristine shell.
 nexus leave >/dev/null 2>&1
 nexus_unintegrate >/dev/null 2>&1

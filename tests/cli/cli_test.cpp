@@ -330,7 +330,7 @@ int main() {
                 .exit_code == 0);
       {
         CliResult r = RunCli(cli, "start badeng", outfile);
-        CHECK("starting a dead engine -> operational error", r.exit_code == 1);
+        CHECK("starting a dead engine -> bad-state exit code", r.exit_code == 6);
         CHECK("start error explains the engine's initialization failure",
               Contains(r.out, "failed to initialize"));
       }

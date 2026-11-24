@@ -30,12 +30,19 @@ namespace cli {
 
 // Stable CLI exit codes.
 enum CliExit {
-  kOk = 0,        // success
-  kError = 1,     // operational failure (I/O, state, pool, runtime)
-  kUsage = 2,     // unknown command, wrong argument count, bad flag
-  kInvalid = 3,   // bad value: invalid name, malformed hex, bad number
-  kNotFound = 4,  // container/table/record does not exist
+  kOk = 0,          // success
+  kError = 1,       // unmapped operational failure
+  kUsage = 2,       // unknown command, wrong argument count, bad flag
+  kInvalid = 3,     // bad value: invalid name, malformed hex, bad number
+  kNotFound = 4,    // container/table/record does not exist
+  kIoError = 5,     // filesystem/I/O failure
+  kBadState = 6,    // closed/invalid runtime or storage state
+  kBufferFull = 7,  // buffer pool has no usable frame
+  kOutOfMemory = 8, // allocation failed
 };
+
+// Maps a DB/Manager Status code to the stable CLI exit code above.
+int ExitCodeFor(DbError code);
 
 enum class CommandKind {
   kHelp,
@@ -45,6 +52,7 @@ enum class CommandKind {
   kContainerStatus,
   kContainerDelete,
   kContainerList,
+  kContainerResources,
   kContainerExec,
   kDbInit,
   kTableCreate,
@@ -74,6 +82,7 @@ struct Command {
   std::string program_path; // argv[0], used to locate db_engine by default
   std::string help_topic;   // "" or the subcommand name for `<cmd> --help`
   bool engine_explicit = false; // --engine or --no-engine was provided
+  bool isolate_namespaces = false; // --isolate requests Linux namespace isolation
 };
 
 struct Result {

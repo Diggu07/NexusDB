@@ -32,7 +32,7 @@
 //     the smallest sound IPC for the existing file-based architecture.
 //
 //       ping                         -> "OK pong"
-//       stats                        -> "OK" + pages/pool lines
+//       stats                        -> "OK" + pages/pool/cache/latency lines
 //       init                         -> "OK initialized" (already open)
 //       table create <name>          -> "OK created table <name>"
 //       table list                   -> "OK" + one table name per line
@@ -90,6 +90,7 @@
 //   shutdown.
 
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -97,6 +98,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -217,6 +219,9 @@ constexpr int kSendFlags = MSG_NOSIGNAL;
 constexpr int kSendFlags = 0;
 #endif
 
+using Clock = std::chrono::steady_clock;
+double g_last_query_latency_ms = -1.0;
+
 std::string HexEncode(const std::uint8_t* data, std::size_t len) {
   static const char* kHex = "0123456789abcdef";
   std::string out;
@@ -282,6 +287,23 @@ std::string Ok(const std::string& text = std::string()) {
   return text.empty() ? std::string("OK\n") : "OK " + text + "\n";
 }
 
+void RecordQueryLatency(Clock::time_point start) {
+  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                      Clock::now() - start)
+                      .count();
+  g_last_query_latency_ms = static_cast<double>(us) / 1000.0;
+}
+
+std::string QueryOk(const std::string& text, Clock::time_point start) {
+  RecordQueryLatency(start);
+  return Ok(text);
+}
+
+std::string QueryLines(const std::string& body, Clock::time_point start) {
+  RecordQueryLatency(start);
+  return "OK\n" + body;
+}
+
 int ExitCode(const nexusdb::Status& s) {
   using nexusdb::DbError;
   switch (s.code) {
@@ -325,6 +347,7 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
   const std::vector<std::string> a = Tokenize(line);
   if (a.empty())
     return "ERR 3 empty request\n";
+  const auto started = Clock::now();
 
   if (a[0] == "ping")
     return Ok("pong");
@@ -347,6 +370,14 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
     out += "pool_capacity " + std::to_string(db->pool()->capacity()) + "\n";
     out += "pool_resident " + std::to_string(db->pool()->size()) + "\n";
     out += "pool_pinned " + std::to_string(db->pool()->pinned_frames()) + "\n";
+    out += "cache_hits " + std::to_string(db->pool()->cache_hits()) + "\n";
+    out += "cache_misses " + std::to_string(db->pool()->cache_misses()) + "\n";
+    std::ostringstream latency;
+    if (g_last_query_latency_ms >= 0.0)
+      latency << std::fixed << std::setprecision(3) << g_last_query_latency_ms;
+    else
+      latency << "n/a";
+    out += "query_latency_ms " + latency.str() + "\n";
     return out;
   }
 
@@ -359,7 +390,7 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
       const Status s = db->executor().CreateTable(a[2]);
       if (!s.ok())
         return Err(s);
-      return Ok("created table " + a[2]);
+      return QueryOk("created table " + a[2], started);
     }
     if (a[1] == "list") {
       if (a.size() != 2)
@@ -368,10 +399,10 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
       const Status s = db->executor().ListTables(&tables);
       if (!s.ok())
         return Err(s);
-      std::string out = "OK\n";
+      std::string out;
       for (const std::string& name : tables)
         out += name + "\n";
-      return out;
+      return QueryLines(out, started);
     }
     return "ERR 3 unknown table subcommand: " + a[1] + "\n";
   }
@@ -386,8 +417,9 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
     const Status s = db->executor().Insert(a[1], data.data(), data.size(), &id);
     if (!s.ok())
       return Err(s);
-    return Ok("page=" + std::to_string(id.page) +
-              " slot=" + std::to_string(id.slot));
+    return QueryOk("page=" + std::to_string(id.page) +
+                       " slot=" + std::to_string(id.slot),
+                   started);
   }
 
   if (a[0] == "get" || a[0] == "update" || a[0] == "delete") {
@@ -410,14 +442,16 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
       const Status s = db->executor().Get(a[1], id, &data, &len);
       if (!s.ok())
         return Err(s);
-      return Ok("page=" + a[2] + " slot=" + a[3] +
-                " len=" + std::to_string(len) + " hex=" + HexEncode(data, len));
+      return QueryOk("page=" + a[2] + " slot=" + a[3] +
+                         " len=" + std::to_string(len) +
+                         " hex=" + HexEncode(data, len),
+                     started);
     }
     if (a[0] == "delete") {
       const Status s = db->executor().Delete(a[1], id);
       if (!s.ok())
         return Err(s);
-      return Ok("deleted page=" + a[2] + " slot=" + a[3]);
+      return QueryOk("deleted page=" + a[2] + " slot=" + a[3], started);
     }
     std::vector<std::uint8_t> data;
     if (!HexDecode(a[4], &data))
@@ -425,7 +459,7 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
     const Status s = db->executor().Update(a[1], id, data.data(), data.size());
     if (!s.ok())
       return Err(s);
-    return Ok("updated page=" + a[2] + " slot=" + a[3]);
+    return QueryOk("updated page=" + a[2] + " slot=" + a[3], started);
   }
 
   if (a[0] == "scan") {
@@ -435,7 +469,7 @@ std::string DispatchCommand(nexusdb::Database* db, const std::string& line,
     const Status s = db->executor().Scan(a[1], AppendScan, &records);
     if (!s.ok())
       return Err(s);
-    return "OK\n" + records;
+    return QueryLines(records, started);
   }
 
   return "ERR 3 unknown command: " + a[0] + "\n";

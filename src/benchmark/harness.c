@@ -541,9 +541,9 @@ int nexus_bench_result_write(const nexus_bench_result_t *out,
     fprintf(f, "\nunavailable_metrics (NOT measured; never fabricated)\n"
                "---------------------------------------------------\n");
     fprintf(f, "engine_reported_cache_counters: unavailable "
-               "(BufferPool exposes none; hit/miss observed by the harness via Contains())\n");
+               "(harness does not sample engine stats; hit/miss observed via Contains())\n");
     fprintf(f, "engine_reported_query_latency: unavailable "
-               "(no query processor on this branch; per-step Fetch time reported above)\n");
+               "(harness does not sample engine stats; per-step Fetch time reported above)\n");
 
     if (env_block != NULL) {
         fprintf(f, "\nenvironment_capture\n-------------------\n");
