@@ -72,7 +72,11 @@ Testing/
 data/
 logs/
 demo_data/
-nexusdb_data/
+nexusdb_data/*
+!nexusdb_data/README.txt
+!nexusdb_data/*/
+nexusdb_data/*/*
 *.db
 *.sock
 *.sock.path
+!nexusdb_data/**/*.db
